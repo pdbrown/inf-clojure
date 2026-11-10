@@ -285,8 +285,7 @@ The following commands are available:
 
 \\{inf-clojure-minor-mode-map}"
   :lighter inf-clojure-mode-line
-  :keymap inf-clojure-minor-mode-map
-  (setq-local comint-input-sender 'inf-clojure--send-string))
+  :keymap inf-clojure-minor-mode-map)
 
 (defun inf-clojure--endpoint-p (x)
   "Return non-nil if and only if X is a valid endpoint.
@@ -308,28 +307,6 @@ port is an integer, or a string to startup an interpreter like
 
 (defvar inf-clojure-custom-repl-name nil
   "A string to be used as the repl buffer name.")
-
-(defun inf-clojure--sanitize-command (command)
-  "Sanitize COMMAND for sending it to a process.
-An example of things that this function does is to add a final
-newline at the end of the form.  Return an empty string if the
-sanitized command is empty."
-  (let ((sanitized (string-trim-right command)))
-    (if (string-blank-p sanitized)
-        ""
-      (concat sanitized "\n"))))
-
-(defun inf-clojure--send-string (proc string)
-  "A custom `comint-input-sender` / `comint-send-string`.
-It performs the required side effects on every send for PROC and
-STRING (for example set the buffer local REPL type).  It should
-always be preferred over `comint-send-string`.  It delegates to
-`comint-simple-send` so it always appends a newline at the end of
-the string for evaluation.  Refer to `comint-simple-send` for
-customizations."
-  (let ((sanitized (inf-clojure--sanitize-command string)))
-    (inf-clojure--log-string sanitized "----CMD->")
-    (comint-send-string proc sanitized)))
 
 (defcustom inf-clojure-prompt "^[^=> \n]+=> *"
   "Regexp to recognize prompts in the Inferior Clojure mode."
@@ -441,7 +418,6 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
   following expression.  Paragraphs are separated only by blank lines.
   Semicolons start comments.  If you accidentally suspend your process,
   use \\[comint-continue-subjob] to continue it."
-  (setq-local comint-input-sender 'inf-clojure--send-string)
   (setq-local comint-prompt-regexp inf-clojure-comint-prompt-regexp)
   (setq-local mode-line-process '(":%s"))
   ;; NOTE: Using Tree-sitter based syntax highlighting in comint
@@ -725,47 +701,6 @@ defaults provided in `inf-clojure-socket-repl-startup-forms'."
     (set-process-filter sock #'inf-clojure-socket-filter)
     (message "Starting clojure socket REPL server at %s:%d with %s" host port socket-cmd)))
 
-
-(defun inf-clojure--forms-without-newlines (str)
-  "Remove newlines between toplevel forms.
-STR is a string of contents to be evaluated.  When sending
-multiple forms to a REPL, each newline triggers a prompt.
-So we replace all newlines between top level forms but not inside
-of forms."
-  (condition-case nil
-      (with-temp-buffer
-        (progn
-          ;; Activate preferred major mode.
-          (funcall (car (inf-clojure--get-preferred-major-modes)))
-          (insert str)
-          (whitespace-cleanup)
-          (goto-char (point-min))
-          (while (not (eobp))
-            (while (looking-at "\n")
-              (delete-char 1))
-            ;; NOTE: There is no special API for that in
-            ;; `clojure-ts-mode', so probably for now lets keep this
-            ;; `clojure-mode' function.
-            (unless (eobp)
-              (clojure-forward-logical-sexp))
-            (unless (eobp)
-              (forward-char)
-              ;; Remove an empty line at the end of the buffer.
-              (when (eobp)
-                (delete-char -1))))
-          (buffer-substring-no-properties (point-min) (point-max))))
-    (scan-error str)))
-
-(defun inf-clojure--wrap-for-ns (code)
-  "Wrap CODE to evaluate in the buffer's namespace when appropriate.
-When `inf-clojure-eval-ns-aware' is non-nil and a namespace can be
-detected in the current buffer, wrap CODE in a `binding' form that
-sets `*ns*' to that namespace.  Otherwise return CODE unchanged."
-  (let ((ns (when inf-clojure-eval-ns-aware (inf-clojure--find-ns))))
-    (if ns
-        (format "(binding [*ns* (find-ns '%s)] (eval '(do %s)))" ns code)
-      code)))
-
 (defun inf-clojure-eval-region (start end &optional and-go)
   "Send the current region to the inferior Clojure process.
 Sends substring between START and END.  Prefix argument AND-GO
@@ -773,18 +708,13 @@ means switch to the Clojure buffer afterwards.
 When `inf-clojure-eval-ns-aware' is non-nil, the code is evaluated
 in the context of the buffer's namespace."
   (interactive "r\nP")
-  (let* ((str (buffer-substring-no-properties start end))
-         ;; newlines over a socket repl between top level forms cause
-         ;; a prompt to be returned. so here we dump the region into a
-         ;; temp buffer, and delete all newlines between the forms
-         (formatted (inf-clojure--forms-without-newlines str))
-         (wrapped (inf-clojure--wrap-for-ns formatted)))
-    (inf-clojure--send-string (inf-clojure-proc) wrapped))
+  (let* ((str (buffer-substring-no-properties start end)))
+    (comint-simple-send (inf-clojure-proc) str))
   (when and-go (inf-clojure-switch-to-repl t)))
 
 (defun inf-clojure-eval-string (code)
   "Send the string CODE to the inferior Clojure process to be executed."
-  (inf-clojure--send-string (inf-clojure-proc) code))
+  (comint-simple-send (inf-clojure-proc) code))
 
 (defun inf-clojure--defun-at-point (&optional bounds)
   "Return text or range of defun at point.
