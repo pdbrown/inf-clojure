@@ -364,11 +364,10 @@ See command `inf-clojure-minor-mode'."
 
 (define-derived-mode inf-clojure-mode comint-mode "Inferior Clojure"
   "Major mode for interacting with an inferior Clojure process.
-Runs a Clojure interpreter as a subprocess of Emacs, with Clojure
-I/O through an Emacs buffer.  The REPL type and the forms used for
-various commands are controlled by `inf-clojure-repl-features'.
-Variables `inf-clojure-prompt' and `inf-clojure-filter-regexp' can
-customize this mode for different Clojure REPLs.
+Runs a Clojure interpreter as a subprocess of Emacs, with Clojure I/O
+through an Emacs buffer. Variables `inf-clojure-prompt-regexp' and
+`inf-clojure-filter-regexp' can customize this mode for different
+Clojure REPLs.
 
 For information on running multiple processes in multiple buffers, see
 documentation for variable `inf-clojure-buffer'.
@@ -431,18 +430,6 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
 (defun inf-clojure-input-filter (str)
   "Return t if STR does not match `inf-clojure-filter-regexp'."
   (not (string-match inf-clojure-filter-regexp str)))
-
-(defvar-local inf-clojure--filtering-output nil
-  "Non-nil while filtering output from a programmatic inf-clojure command.
-Set on the first output chunk of an inf-clojure command and cleared
-when a prompt is detected, so that multi-chunk responses are filtered
-consistently without relying on `this-command'/`last-command' for
-every chunk.")
-
-(defvar-local inf-clojure--output-pending-newline nil
-  "Non-nil if the next output chunk should be preceded by a newline.
-Used to prepend a single newline before the first chunk of output
-from a programmatic command, separating it from the input.")
 
 (defun inf-clojure-clear-repl-buffer ()
   "Clear the REPL buffer."
@@ -603,7 +590,7 @@ prevent showing the startup message."
 (defun inf-clojure-socket-filter (process output)
   "A filter that gets triggered each time the socket receives new OUTPUT.
 This function prints out the output received but also
-watches for a prompt using the `inf-clojure-prompt' regexp, once
+watches for a prompt using the `inf-clojure-prompt-regexp', once
 this happens a callback is triggered if available.  The callback
 is intended to be used to trigger a `inf-clojure-connect' once we
 can determine that a socket REPL is ready to receive a
@@ -777,86 +764,8 @@ Indent FORM.  FORM is expected to have been trimmed."
    (buffer-substring-no-properties (save-excursion (backward-sexp) (point))
                                    (point))))
 
-(declare-function clojure-ts-find-ns "clojure-ts-mode")
-
-(defun inf-clojure--find-ns ()
-  "Return the namespace of the current Clojure buffer.
-
-This function delegates its job to an appropriate function, considering
-`inf-clojure-source-modes'."
-  (pcase (car (inf-clojure--get-preferred-major-modes))
-    ('clojure-ts-mode (clojure-ts-find-ns))
-    (_ (clojure-find-ns))))
-
-(defun inf-clojure-connected-p ()
-  "Return t if inferior Clojure is currently connected, nil otherwise."
-  (and inf-clojure-buffer
-       (not (null (inf-clojure-proc t)))))
 
 
-
-;;; Ancillary functions
-;;; ===================
-
-(defun inf-clojure-symprompt (prompt default)
-  "Read a string from the user.
-
-It allows to specify a PROMPT string and a DEFAULT string to
-display."
-  (list (let* ((prompt (if default
-                           (format "%s (default %s): " prompt default)
-                         (concat prompt ": ")))
-               (ans (read-string prompt)))
-          (if (zerop (length ans)) default ans))))
-
-
-;; Adapted from function-called-at-point in help.el.
-(defun inf-clojure-fn-called-at-pt ()
-  "Return the name of the function called in the current call.
-The value is nil if it can't find one."
-  (condition-case nil
-      (save-excursion
-        (save-restriction
-          (narrow-to-region (max (point-min) (- (point) 1000)) (point-max))
-          (backward-up-list 1)
-          (forward-char 1)
-          (let ((obj (read (current-buffer))))
-            (and (symbolp obj) obj))))
-    (error nil)))
-
-(defun inf-clojure-symbol-at-point ()
-  "Return the name of the symbol at point, otherwise nil."
-  (or (thing-at-point 'symbol) ""))
-
-;;;; Logging
-;;;; ================
-
-(defvar inf-clojure--log-file-name ".inf-clojure.log"
-  "The name of the file used to log process activity.")
-
-(defvar inf-clojure-log-activity nil
-  "Log process activity?.
-Inf-Clojure will create a log file in the project folder named
-`inf-clojure--log-file-name' and dump the process activity in it
-in case this is not nil.")
-
-(defun inf-clojure--log-string (string &optional tag)
-  "Log STRING to file, according to `inf-clojure-log-activity'.
-The optional TAG will be converted to string and printed before
-STRING if present."
-  (when inf-clojure-log-activity
-    (write-region (concat "\n"
-                          (when tag
-                            (if (stringp tag)
-                              (concat tag "\n")
-                              (concat (prin1-to-string tag) "\n")))
-                          (let ((print-escape-newlines t))
-                            (prin1-to-string (substring-no-properties string))))
-                  nil
-                  (expand-file-name inf-clojure--log-file-name
-                                    (inf-clojure--project-dir))
-                  'append
-                  'no-annoying-write-file-in-minibuffer)))
 
 ;;;; Misc
 ;;;; ========
