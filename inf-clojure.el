@@ -90,7 +90,7 @@ named *inf-clojure*.  You can switch between the different process
 buffers with \\[switch-to-buffer].
 
 Commands that send text from source buffers to Clojure processes --
-like `inf-clojure-eval-defun' or `inf-clojure-show-arglists' -- have to choose a
+like `inf-clojure-eval-defun' -- have to choose a
 process to send to, when you have more than one Clojure process around.  This
 is determined by the global variable `inf-clojure-buffer'.  Suppose you
 have three inferior Clojures running:
@@ -211,12 +211,6 @@ Either \"no process\" or \"buffer-name(pid)\""
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map comint-mode-map)
     (define-key map (kbd "C-x C-e") #'inf-clojure-eval-last-sexp)
-    (define-key map (kbd "C-c C-l") #'inf-clojure-load-file)
-    (define-key map (kbd "C-c C-a") #'inf-clojure-show-arglists)
-    (define-key map (kbd "C-c C-v") #'inf-clojure-show-var-documentation)
-    (define-key map (kbd "C-c C-s") #'inf-clojure-show-var-source)
-    (define-key map (kbd "C-c C-S-m") #'inf-clojure-show-var-meta)
-    (define-key map (kbd "C-c C-S-a") #'inf-clojure-apropos)
     (define-key map (kbd "C-c M-o") #'inf-clojure-clear-repl-buffer)
     (define-key map (kbd "C-c C-q") #'inf-clojure-quit)
     (define-key map (kbd "C-c C-z") #'inf-clojure-switch-to-recent-buffer)
@@ -224,14 +218,6 @@ Either \"no process\" or \"buffer-name(pid)\""
       "Inferior Clojure REPL Menu"
       '("Inf-Clojure REPL"
         ["Eval last sexp" inf-clojure-eval-last-sexp t]
-        "--"
-        ["Load file" inf-clojure-load-file t]
-        "--"
-        ["Show arglists" inf-clojure-show-arglists t]
-        ["Show documentation for var" inf-clojure-show-var-documentation t]
-        ["Show source for var" inf-clojure-show-var-source t]
-        ["Show metadata for var" inf-clojure-show-var-meta t]
-        ["Apropos" inf-clojure-apropos t]
         "--"
         ["Clear REPL" inf-clojure-clear-repl-buffer]
         ["Restart" inf-clojure-restart]
@@ -256,19 +242,9 @@ Either \"no process\" or \"buffer-name(pid)\""
     (define-key map (kbd "C-c C-c") #'inf-clojure-eval-defun)     ; SLIME/CIDER style
     (define-key map (kbd "C-c C-b") #'inf-clojure-eval-buffer)
     (define-key map (kbd "C-c C-r") #'inf-clojure-eval-region)
-    (define-key map (kbd "C-c M-r") #'inf-clojure-reload)
     (define-key map (kbd "C-c C-n") #'inf-clojure-eval-form-and-next)
     (define-key map (kbd "C-c C-j") inf-clojure-insert-commands-map)
     (define-key map (kbd "C-c C-z") #'inf-clojure-switch-to-repl)
-    (define-key map (kbd "C-c C-i") #'inf-clojure-show-ns-vars)
-    (define-key map (kbd "C-c C-S-a") #'inf-clojure-apropos)
-    (define-key map (kbd "C-c C-m") #'inf-clojure-macroexpand)
-    (define-key map (kbd "C-c C-l") #'inf-clojure-load-file)
-    (define-key map (kbd "C-c C-a") #'inf-clojure-show-arglists)
-    (define-key map (kbd "C-c C-v") #'inf-clojure-show-var-documentation)
-    (define-key map (kbd "C-c C-s") #'inf-clojure-show-var-source)
-    (define-key map (kbd "C-c C-S-m") #'inf-clojure-show-var-meta)
-    (define-key map (kbd "C-c M-n") #'inf-clojure-set-ns)
     (define-key map (kbd "C-c C-q") #'inf-clojure-quit)
     (define-key map (kbd "C-c M-c") #'inf-clojure-connect)
     (easy-menu-define inf-clojure-minor-mode-menu map
@@ -279,19 +255,7 @@ Either \"no process\" or \"buffer-name(pid)\""
         ["Eval region" inf-clojure-eval-region t]
         ["Eval buffer" inf-clojure-eval-buffer t]
         "--"
-        ["Load file..." inf-clojure-load-file t]
-        ["Reload file... " inf-clojure-reload t]
-        "--"
         ["Switch to REPL" inf-clojure-switch-to-repl t]
-        ["Set REPL ns" inf-clojure-set-ns t]
-        "--"
-        ["Show arglists" inf-clojure-show-arglists t]
-        ["Show documentation for var" inf-clojure-show-var-documentation t]
-        ["Show source for var" inf-clojure-show-var-source t]
-        ["Show metadata for var" inf-clojure-show-var-meta t]
-        ["Show vars in ns" inf-clojure-show-ns-vars t]
-        ["Apropos" inf-clojure-apropos t]
-        ["Macroexpand" inf-clojure-macroexpand t]
         "--"
         ["Restart REPL" inf-clojure-restart]
         ["Quit REPL" inf-clojure-quit]))
@@ -396,15 +360,6 @@ All buffers in `clojure-mode' will automatically be in
   :safe #'booleanp
   :package-version '(inf-clojure . "3.1.0"))
 
-(defcustom inf-clojure-eval-ns-aware nil
-  "When non-nil, evaluate code in the context of the buffer's namespace.
-Eval commands will wrap the code so that it executes in the
-namespace declared in the current buffer's `ns' form, rather than
-whatever namespace the REPL is currently in."
-  :type 'boolean
-  :safe #'booleanp
-  :package-version '(inf-clojure . "3.4.0"))
-
 (defun inf-clojure--get-preferred-major-modes ()
   "Return list of preferred major modes that are actually available."
   (cl-remove-if-not (lambda (mode) (featurep mode))
@@ -462,10 +417,6 @@ Clojure source.
     process buffer.
     `inf-clojure-eval-defun' sends the current defun to the Clojure process.
     `inf-clojure-eval-region' sends the current region to the Clojure process.
-    `inf-clojure-load-file' loads a Clojure file into the REPL.
-    `inf-clojure-reload' reloads the current namespace (with `M--' prefix
-    for :reload-all).
-    `inf-clojure-set-ns' sets the REPL namespace to the current ns.
 
     Prefixing the inf-clojure-eval/defun/region commands with
     a \\[universal-argument] causes a switch to the Clojure process buffer after
@@ -910,31 +861,6 @@ Indent FORM.  FORM is expected to have been trimmed."
    (buffer-substring-no-properties (save-excursion (backward-sexp) (point))
                                    (point))))
 
-(defvar inf-clojure-prev-loaded-dir-and-file nil
-  "Record last directory and file used in loading or compiling.
-This holds a cons cell of the form `(DIRECTORY . FILE)'
-describing the last `inf-clojure-load-file' command.")
-
-(defun inf-clojure-load-file (&optional switch-to-repl file-name)
-  "Load a Clojure file into the inferior Clojure process.
-
-The prefix argument SWITCH-TO-REPL controls whether to switch to
-REPL after the file is loaded or not.  If the argument FILE-NAME
-is present it will be used instead of the current file."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (file-name (or file-name
-                        (car (comint-get-source "Load Clojure file: " inf-clojure-prev-loaded-dir-and-file
-                                                ;; nil because doesn't need an exact name
-                                                (inf-clojure--get-preferred-major-modes) nil))))
-         (load-form (inf-clojure-get-feature proc 'load)))
-    (comint-check-source file-name) ; Check to see if buffer needs saved.
-    (setq inf-clojure-prev-loaded-dir-and-file (cons (file-name-directory    file-name)
-                                              (file-name-nondirectory file-name)))
-    (inf-clojure--send-string proc (format load-form file-name))
-    (when switch-to-repl
-      (inf-clojure-switch-to-repl t))))
-
 (declare-function clojure-ts-find-ns "clojure-ts-mode")
 
 (defun inf-clojure--find-ns ()
@@ -945,26 +871,6 @@ This function delegates its job to an appropriate function, considering
   (pcase (car (inf-clojure--get-preferred-major-modes))
     ('clojure-ts-mode (clojure-ts-find-ns))
     (_ (clojure-find-ns))))
-
-(defun inf-clojure-reload (arg)
-  "Send a query to the inferior Clojure for reloading the namespace.
-
-The prefix argument ARG can change the behavior of the command:
-
-  - \\`C-u' \\[inf-clojure-reload]: prompts for a namespace name.
-  - \\`M--' \\[inf-clojure-reload]: executes (require ... :reload-all).
-  - \\`M--' \\`C-u' \\[inf-clojure-reload]: reloads all AND prompts."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (reload-all-p (or (equal arg '-) (equal arg '(-4))))
-         (prompt-p (or (equal arg '(4)) (equal arg '(-4))))
-         (ns (if prompt-p
-                (car (inf-clojure-symprompt "Namespace" (inf-clojure--find-ns)))
-              (inf-clojure--find-ns)))
-         (form (if (not reload-all-p)
-                   (inf-clojure-get-feature proc 'reload)
-                 (inf-clojure-get-feature proc 'reload-all))))
-    (inf-clojure--send-string proc (format form ns))))
 
 (defun inf-clojure-connected-p ()
   "Return t if inferior Clojure is currently connected, nil otherwise."
@@ -1006,45 +912,6 @@ The value is nil if it can't find one."
   "Return the name of the symbol at point, otherwise nil."
   (or (thing-at-point 'symbol) ""))
 
-;;; Documentation functions: var doc and arglists.
-;;; ======================================================================
-
-(defun inf-clojure-show-var-documentation (prompt-for-symbol)
-  "Send a form to the inferior Clojure to give documentation for VAR.
-When invoked with a prefix argument PROMPT-FOR-SYMBOL, it prompts
-for a symbol name."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (var (if prompt-for-symbol
-                  (car (inf-clojure-symprompt "Var doc" (inf-clojure-symbol-at-point)))
-                (inf-clojure-symbol-at-point)))
-         (doc-form (inf-clojure-get-feature proc 'doc)))
-    (inf-clojure--send-string proc (format doc-form var))))
-
-(defun inf-clojure-show-var-source (prompt-for-symbol)
-  "Send a command to the inferior Clojure to give source for VAR.
-When invoked with a prefix argument PROMPT-FOR-SYMBOL, it prompts
-for a symbol name."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (var (if prompt-for-symbol
-                  (car (inf-clojure-symprompt "Var source" (inf-clojure-symbol-at-point)))
-                (inf-clojure-symbol-at-point)))
-         (source-form (inf-clojure-get-feature proc 'source)))
-    (inf-clojure--send-string proc (format source-form var))))
-
-(defun inf-clojure-show-var-meta (prompt-for-symbol)
-  "Send a command to the inferior Clojure to give metadata for VAR.
-When invoked with a prefix argument PROMPT-FOR-SYMBOL, it prompts
-for a symbol name."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (var (if prompt-for-symbol
-                  (car (inf-clojure-symprompt "Var meta" (inf-clojure-symbol-at-point)))
-                (inf-clojure-symbol-at-point)))
-         (meta-form (inf-clojure-get-feature proc 'var-meta)))
-    (inf-clojure--send-string proc (format meta-form var))))
-
 ;;;; Logging
 ;;;; ================
 
@@ -1075,69 +942,8 @@ STRING if present."
                   'append
                   'no-annoying-write-file-in-minibuffer)))
 
-;;;; Commands
+;;;; Misc
 ;;;; ========
-
-(defun inf-clojure-show-arglists (prompt-for-symbol)
-  "Send a command to the inferior Clojure to show arglists for FN.
-When invoked with a prefix argument PROMPT-FOR-SYMBOL, it prompts
-for a symbol name."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (fn (if prompt-for-symbol
-                 (car (inf-clojure-symprompt "Arglists" (inf-clojure-fn-called-at-pt)))
-               (inf-clojure-fn-called-at-pt)))
-         (arglists-form (inf-clojure-get-feature proc 'arglists)))
-    (inf-clojure--send-string proc (format arglists-form fn))))
-
-(defun inf-clojure-show-ns-vars (prompt-for-ns)
-  "Send a query to the inferior Clojure for the public vars in NS.
-When invoked with a prefix argument PROMPT-FOR-NS, it prompts for
-a namespace name."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (ns (if prompt-for-ns
-                 (car (inf-clojure-symprompt "Ns vars" (inf-clojure--find-ns)))
-               (inf-clojure--find-ns)))
-         (ns-vars-form (inf-clojure-get-feature proc 'ns-vars)))
-    (inf-clojure--send-string proc (format ns-vars-form ns))))
-
-(defun inf-clojure-set-ns (prompt-for-ns)
-  "Set the ns of the inferior Clojure process to NS.
-Defaults to the ns of the current buffer.  When invoked with a
-prefix argument PROMPT-FOR-NS, it prompts for a namespace name."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (ns (if prompt-for-ns
-                 (car (inf-clojure-symprompt "Set ns to" (inf-clojure--find-ns)))
-               (inf-clojure--find-ns)))
-         (set-ns-form (inf-clojure-get-feature proc 'set-ns)))
-    (when (or (not ns) (equal ns ""))
-      (user-error "No namespace selected"))
-    (inf-clojure--send-string proc (format set-ns-form ns))
-    (message "Namespace set to %s" ns)))
-
-(defun inf-clojure-apropos (expr)
-  "Send an expression to the inferior Clojure for apropos.
-EXPR can be either a regular expression or a stringable thing."
-  (interactive (inf-clojure-symprompt "Var apropos" (inf-clojure-symbol-at-point)))
-  (let* ((proc (inf-clojure-proc))
-         (apropos-form (inf-clojure-get-feature proc 'apropos)))
-    (inf-clojure--send-string proc (format apropos-form expr))))
-
-(defun inf-clojure-macroexpand (&optional macro-1)
-  "Send a form to the inferior Clojure for macro expansion.
-With a prefix arg MACRO-1 uses `macroexpand-1' instead of `macroexpand'."
-  (interactive "P")
-  (let* ((proc (inf-clojure-proc))
-         (last-sexp (buffer-substring-no-properties (save-excursion (backward-sexp) (point)) (point)))
-         (macroexpand-form (inf-clojure-get-feature proc
-                                                    (if macro-1
-                                                        'macroexpand-1
-                                                      'macroexpand))))
-    (inf-clojure--send-string
-     proc
-     (format macroexpand-form last-sexp))))
 
 (defun inf-clojure-display-version ()
   "Display the current `inf-clojure' version in the minibuffer."
