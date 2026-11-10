@@ -58,7 +58,6 @@
 (require 'comint)
 (require 'clojure-mode)
 (require 'clojure-ts-mode nil :no-error)
-(require 'eldoc)
 (require 'thingatpt)
 (require 'ansi-color)
 (require 'cl-lib)
@@ -76,88 +75,7 @@
                                     (node-babashka . "nbb")
                                     (joker . "joker")))
 
-(defun inf-clojure--merge-repl-features (base overrides)
-  "Return a new feature alist by merging OVERRIDES onto BASE.
-Keys in OVERRIDES take precedence over those in BASE."
-  (append overrides
-          (cl-remove-if (lambda (entry)
-                          (assq (car entry) overrides))
-                        base)))
-
-(defvar inf-clojure--clojure-repl-base-features
-  '((load . "(clojure.core/load-file \"%s\")")
-    (doc . "(clojure.repl/doc %s)")
-    (source . "(clojure.repl/source %s)")
-    (arglists . "(try (-> '%s clojure.core/resolve clojure.core/meta :arglists) (catch Throwable e nil))")
-    (apropos . "(doseq [var (sort (clojure.repl/apropos \"%s\"))] (println (str var)))")
-    (ns-vars . "(clojure.repl/dir %s)")
-    (set-ns . "(clojure.core/in-ns '%s)")
-    (macroexpand . "(clojure.core/macroexpand '%s)")
-    (macroexpand-1 . "(clojure.core/macroexpand-1 '%s)")
-    (reload . "(require '%s :reload)")
-    (reload-all . "(require '%s :reload-all)")
-    (var-meta . "(clojure.core/meta (clojure.core/resolve '%s))"))
-  "Base feature forms shared by Clojure-family REPLs.
-Individual REPL types override specific entries (e.g. `arglists')
-via `inf-clojure--merge-repl-features'.")
-
-(defvar inf-clojure-repl-features
-  `((cljs . ,(inf-clojure--merge-repl-features
-              inf-clojure--clojure-repl-base-features
-              '((load . nil)
-                (doc . "(cljs.repl/doc %s)")
-                (source . "(cljs.repl/source %s)")
-                (arglists . "(try (->> '%s cljs.core/resolve cljs.core/meta :arglists) (catch :default _ nil))")
-                (apropos . "(cljs.repl/apropos \"%s\")")
-                (ns-vars . "(cljs.repl/dir %s)")
-                (set-ns . "(in-ns '%s)")
-                (macroexpand . "(cljs.core/macroexpand '%s)")
-                (macroexpand-1 . "(cljs.core/macroexpand-1 '%s)")
-                (var-meta . "(cljs.core/meta (cljs.core/resolve '%s))"))))
-    (planck . ,(inf-clojure--merge-repl-features
-                inf-clojure--clojure-repl-base-features
-                '((load . "(load-file \"%s\")")
-                  (doc . "(planck.repl/doc %s)")
-                  (source . "(planck.repl/source %s)")
-                  (arglists . "(planck.repl/get-arglists \"%s\")")
-                  (apropos . "(doseq [var (sort (planck.repl/apropos \"%s\"))] (println (str var)))")
-                  (ns-vars . "(planck.repl/dir %s)")
-                  (set-ns . "(in-ns '%s)")
-                  (macroexpand . "(macroexpand '%s)")
-                  (macroexpand-1 . "(macroexpand-1 '%s)")
-                  (completion . "(seq (js->clj (#'planck.repl/get-completions \"%s\")))")
-                  (var-meta . "(cljs.core/meta (cljs.core/resolve '%s))"))))
-    (joker . ,(inf-clojure--merge-repl-features
-               inf-clojure--clojure-repl-base-features
-               '((load . "(load-file \"%s\")")
-                 (doc . "(joker.repl/doc %s)")
-                 (source . nil)
-                 (apropos . nil)
-                 (ns-vars . nil)
-                 (arglists .
-                           "(try
-                            (:arglists
-                             (joker.core/meta
-                              (joker.core/resolve
-                               (joker.core/read-string \"%s\"))))
-                            (catch Error _ nil))")
-                 (set-ns . "(in-ns '%s)")
-                 (macroexpand . "(macroexpand '%s)")
-                 (macroexpand-1 . "(macroexpand-1 '%s)")
-                 (var-meta . "(joker.core/meta (joker.core/resolve '%s))"))))
-    (babashka . ,(copy-alist inf-clojure--clojure-repl-base-features))
-    (node-babashka . ,(copy-alist inf-clojure--clojure-repl-base-features))
-    (clojure . ,(copy-alist inf-clojure--clojure-repl-base-features))
-    (clojure-clr . ,(inf-clojure--merge-repl-features
-                     inf-clojure--clojure-repl-base-features
-                     '((arglists .
-                                 "(try (-> '%s clojure.core/resolve clojure.core/meta :arglists) (catch Exception e nil))"))))))
-
-
-(defvar-local inf-clojure-repl-type nil
-  "Symbol to define your REPL type.
-Its root binding is nil and it can be further customized using
-either `setq-local` or an entry in `.dir-locals.el`.")
+(defvar inf-clojure-pid nil)
 
 (defvar inf-clojure-buffer nil
   "The current `inf-clojure' process buffer.
@@ -194,43 +112,6 @@ Whenever \\[inf-clojure] fires up a new process, it resets
 one process, this does the right thing.  If you run multiple
 processes, you might need to change `inf-clojure-buffer' to
 whichever process buffer you want to use.")
-
-(defun inf-clojure--get-feature (repl-type feature no-error)
-  "Get FEATURE for REPL-TYPE from `inf-clojure-repl-features'.
-If NO-ERROR is non-nil, return nil instead of signaling an error
-when the feature is not present."
-  (let ((feature-form (alist-get feature (alist-get repl-type inf-clojure-repl-features))))
-    (cond (feature-form feature-form)
-          (no-error nil)
-          (t (error "%s not configured for %s" feature repl-type)))))
-
-(defun inf-clojure-get-feature (proc feature &optional no-error)
-  "Get FEATURE from `inf-clojure-repl-features' for PROC's REPL type.
-When NO-ERROR is non-nil, return nil instead of signaling an error."
-  (let* ((repl-type (or (with-current-buffer (process-buffer proc)
-                          inf-clojure-repl-type)
-                        (error "REPL type is not known"))))
-    (inf-clojure--get-feature repl-type feature no-error)))
-
-(defun inf-clojure--update-feature (repl-type feature form)
-  "Return a copy of the datastructure containing the repl features.
-Given a REPL-TYPE (`clojure', `planck', ...) and a FEATURE (`doc',
-`apropos', ...) and a FORM this will return a new datastructure
-that can be set as `inf-clojure-repl-features'."
-  (let ((original (alist-get repl-type inf-clojure-repl-features)))
-    (if original
-        (cons (cons repl-type (cons (cons feature form) (assoc-delete-all feature original)))
-              (assoc-delete-all repl-type inf-clojure-repl-features))
-      (error "Attempted to update %s form of unknown REPL type %s"
-             (symbol-name feature)
-             (symbol-name repl-type)))))
-
-(defun inf-clojure-update-feature (repl-type feature form)
-  "Mutate the repl features to the new FORM.
-Given a REPL-TYPE (`clojure', `planck', ...) and a FEATURE (`doc',
-`apropos', ...) and a FORM this will set
-`inf-clojure-repl-features' with these new values."
-  (setq inf-clojure-repl-features (inf-clojure--update-feature repl-type feature form)))
 
 (defun inf-clojure-proc (&optional no-error)
   "Return the current inferior Clojure process.
@@ -284,13 +165,6 @@ buffers after they are created with `rename-buffer'."
     (setq inf-clojure-buffer new-repl-buffer)
     (message "Current inf-clojure REPL set to %s" new-repl-buffer)))
 
-(defun inf-clojure--prompt-repl-type ()
-  "Prompt for a REPL type and return it as a symbol."
-  (let ((types (mapcar #'car inf-clojure-repl-features)))
-    (intern
-     (completing-read "Set REPL type: "
-                      (sort (mapcar #'symbol-name types) #'string-lessp)))))
-
 (defgroup inf-clojure nil
   "Run an external Clojure process (REPL) in an Emacs buffer."
   :prefix "inf-clojure-"
@@ -326,11 +200,11 @@ source file by all `inf-clojure' commands."
 
 (defun inf-clojure--modeline-info ()
   "Return modeline info for `inf-clojure-minor-mode'.
-Either \"no process\" or \"buffer-name(repl-type)\""
+Either \"no process\" or \"buffer-name(pid)\""
   (if (and (bufferp inf-clojure-buffer)
            (buffer-live-p inf-clojure-buffer))
       (with-current-buffer inf-clojure-buffer
-        (format "%s(%s)" (buffer-name (current-buffer)) inf-clojure-repl-type))
+        (format "%s(%s)" (buffer-name (current-buffer)) inf-clojure-pid))
     "no process"))
 
 (defvar inf-clojure-mode-map
@@ -439,17 +313,6 @@ mode line entirely."
   :type 'sexp
   :risky t)
 
-(defcustom inf-clojure-enable-eldoc t
-  "Var that allows disabling `eldoc-mode' in `inf-clojure'.
-
-Set to nil to disable eldoc.  Eldoc can be quite useful by
-displaying function signatures in the mode line, but can also
-cause multiple prompts to appear in the REPL and mess with *1,
-*2, etc."
-  :type 'boolean
-  :safe #'booleanp
-  :package-version '(inf-clojure . "3.2.0"))
-
 ;;;###autoload
 (define-minor-mode inf-clojure-minor-mode
   "Minor mode for interacting with the inferior Clojure process buffer.
@@ -459,12 +322,7 @@ The following commands are available:
 \\{inf-clojure-minor-mode-map}"
   :lighter inf-clojure-mode-line
   :keymap inf-clojure-minor-mode-map
-  (setq-local comint-input-sender 'inf-clojure--send-string)
-  (when inf-clojure-enable-eldoc
-    (inf-clojure-eldoc-setup))
-  (make-local-variable 'completion-at-point-functions)
-  (add-to-list 'completion-at-point-functions
-               #'inf-clojure-completion-at-point))
+  (setq-local comint-input-sender 'inf-clojure--send-string))
 
 (defun inf-clojure--endpoint-p (x)
   "Return non-nil if and only if X is a valid endpoint.
@@ -483,20 +341,6 @@ Can be a cons pair of (host . port) where host is a string and
 port is an integer, or a string to startup an interpreter like
 \"planck\"."
    :type '(choice string (cons string integer) (const nil)))
-
-(defcustom inf-clojure-custom-repl-type
-  nil
-  "REPL type to use for `inf-clojure' process buffer.
-Should be a symbol that is a key in `inf-clojure-repl-features'."
-  :package-version '(inf-clojure . "3.0.0")
-  :type '(choice (const :tag "clojure" clojure)
-                 (const :tag "clojure-clr" clojure-clr)
-                 (const :tag "cljs" cljs)
-                 (const :tag "planck" planck)
-                 (const :tag "joker" joker)
-                 (const :tag "babashka" babashka)
-                 (const :tag "node-babashka" node-babashka)
-                 (const :tag "determine at startup" nil)))
 
 (defvar inf-clojure-custom-repl-name nil
   "A string to be used as the repl buffer name.")
@@ -653,13 +497,9 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
   ;; buffer is currently not possible.
   (clojure-mode-variables)
   (clojure-font-lock-setup)
-  (when inf-clojure-enable-eldoc
-    (inf-clojure-eldoc-setup))
   (setq-local comint-get-old-input #'inf-clojure-get-old-input)
   (setq-local comint-input-filter #'inf-clojure-input-filter)
   (setq-local comint-prompt-read-only inf-clojure-prompt-read-only)
-  (add-hook 'comint-preoutput-filter-functions #'inf-clojure-preoutput-filter nil t)
-  (add-hook 'completion-at-point-functions #'inf-clojure-completion-at-point nil t)
   (ansi-color-for-comint-mode-on)
   (when inf-clojure-auto-mode
     (inf-clojure-enable-on-existing-clojure-buffers)))
@@ -690,30 +530,6 @@ every chunk.")
   "Non-nil if the next output chunk should be preceded by a newline.
 Used to prepend a single newline before the first chunk of output
 from a programmatic command, separating it from the input.")
-
-(defun inf-clojure-preoutput-filter (str)
-  "Preprocess the output STR from interactive commands.
-For output triggered by inf-clojure commands (as opposed to direct
-user input), this removes subprompts and prepends a single newline
-before the first chunk.  Output is tracked across chunks using
-`inf-clojure--filtering-output' so that later chunks are handled
-correctly even if `this-command'/`last-command' has changed."
-  (inf-clojure--log-string str "<-RES----")
-  ;; Detect the start of output from a programmatic inf-clojure command.
-  (when (and (not inf-clojure--filtering-output)
-             (let ((cmd (or this-command last-command)))
-               (and cmd (string-prefix-p "inf-clojure-" (symbol-name cmd)))))
-    (setq inf-clojure--filtering-output t)
-    (setq inf-clojure--output-pending-newline t))
-  (if (not inf-clojure--filtering-output)
-      str
-    ;; Stop filtering once a prompt appears (end of response).
-    (when (string-match inf-clojure-prompt str)
-      (setq inf-clojure--filtering-output nil))
-    (let ((prefix (when inf-clojure--output-pending-newline
-                    (setq inf-clojure--output-pending-newline nil)
-                    "\n")))
-      (concat prefix (inf-clojure-remove-subprompts str)))))
 
 (defun inf-clojure-clear-repl-buffer ()
   "Clear the REPL buffer."
@@ -809,11 +625,9 @@ switch to that buffer.
 CMD is a string which serves as the startup command or a cons of
 host and port.
 
- Prompts user for REPL startup command and REPL type if not
-inferrable from startup command.  Uses `inf-clojure-custom-repl-type'
-and `inf-clojure-custom-startup' if those are set.
-Use a prefix to prevent using these when they
-are set.
+Prompts user for REPL startup command and REPL type if not inferrable
+from startup command. Uses `inf-clojure-custom-startup' if set. Use a
+prefix to prevent using these when they are set.
 
 Prints a message that it has connected to the host and port
 unless SUPPRESS-MESSAGE is truthy.
@@ -841,11 +655,7 @@ process buffer for a list of commands.)"
       (let ((default-directory (or project-dir default-directory))
             (cmdlist (if (consp cmd)
                          (list cmd)
-                       (split-string-and-unquote cmd)))
-            (repl-type (or (unless current-prefix-arg
-                             inf-clojure-custom-repl-type)
-                           (car (rassoc cmd inf-clojure-startup-forms))
-                           (inf-clojure--prompt-repl-type))))
+                       (split-string-and-unquote cmd))))
         (unless suppress-message
           (message "Starting Clojure REPL via `%s'..." cmd))
         (with-current-buffer (apply #'make-comint
@@ -854,7 +664,6 @@ process buffer for a list of commands.)"
           (set-syntax-table (pcase (car (inf-clojure--get-preferred-major-modes))
                               ('clojure-ts-mode clojure-ts-mode-syntax-table)
                               (_ clojure-mode-syntax-table)))
-          (setq-local inf-clojure-repl-type repl-type)
           (hack-dir-local-variables-non-file-buffer))))
     ;; update the default comint buffer and switch to it
     (setq inf-clojure-buffer (get-buffer repl-buffer-name))
@@ -943,14 +752,10 @@ defaults provided in `inf-clojure-socket-repl-startup-forms'."
   (let* ((host "localhost")
          (port (or inf-clojure-socket-repl-port (+ 5500 (random 500))))
          (project-dir (inf-clojure--project-dir))
-         (repl-type (or (unless current-prefix-arg
-                          inf-clojure-custom-repl-type)
-                        (car (rassoc cmd inf-clojure-socket-repl-startup-forms))
-                        (inf-clojure--prompt-repl-type)))
          (project-name (inf-clojure--project-name (or project-dir "standalone")))
-         (socket-process-name (format "*%s-%s-socket-server*" project-name repl-type))
+         (socket-process-name (format "*%s-socket-server*" project-name))
          (socket-buffer (get-buffer-create
-                         (format "*%s-%s-socket*" project-name repl-type)))
+                         (format "*%s-socket*" project-name)))
          (socket-cmd (format cmd port))
          (sock (let ((default-directory (or project-dir default-directory)))
                  (start-file-process-shell-command
@@ -960,15 +765,14 @@ defaults provided in `inf-clojure-socket-repl-startup-forms'."
       (setq-local
        inf-clojure-socket-callback
        (lambda ()
-         (let* ((inf-clojure-custom-repl-type repl-type)
-                (created-repl-buffer (inf-clojure-connect host port :suppress-message)))
+         (let* ((created-repl-buffer (inf-clojure-connect host port :suppress-message)))
            (with-current-buffer (get-buffer created-repl-buffer)
              (setq-local inf-clojure-socket-buffer socket-buffer)
              (set-process-sentinel
               (get-buffer-process (current-buffer))
               #'inf-clojure-socket-repl-sentinel))))))
     (set-process-filter sock #'inf-clojure-socket-filter)
-    (message "Starting %s socket REPL server at %s:%d with %s" repl-type host port socket-cmd)))
+    (message "Starting clojure socket REPL server at %s:%d with %s" host port socket-cmd)))
 
 
 (defun inf-clojure--forms-without-newlines (str)
@@ -1241,11 +1045,8 @@ for a symbol name."
          (meta-form (inf-clojure-get-feature proc 'var-meta)))
     (inf-clojure--send-string proc (format meta-form var))))
 
-;;;; Response parsing
+;;;; Logging
 ;;;; ================
-
-(defvar inf-clojure--redirect-buffer-name " *Inf-Clojure Redirect Buffer*"
-  "The name of the buffer used for process output redirection.")
 
 (defvar inf-clojure--log-file-name ".inf-clojure.log"
   "The name of the file used to log process activity.")
@@ -1274,108 +1075,8 @@ STRING if present."
                   'append
                   'no-annoying-write-file-in-minibuffer)))
 
-(defun inf-clojure--string-boundaries (string prompt &optional beg-regexp end-regexp)
-  "Calculate the STRING boundaries, including PROMPT.
-Return a list of positions (beginning end prompt).  If the
-optional BEG-REGEXP and END-REGEXP are present, the boundaries
-are going to match those."
-  (list (or (and beg-regexp (string-match beg-regexp string)) 0)
-        (or (and end-regexp (when (string-match end-regexp string)
-                              (match-end 0)))
-            (length string))
-        (or (string-match prompt string) (length string))))
-
-(defun inf-clojure--get-redirect-buffer ()
-  "Get the redirection buffer, creating it if necessary.
-
-It is the buffer used for processing REPL responses, see variable
-`inf-clojure--redirect-buffer-name'."
-  (or (get-buffer inf-clojure--redirect-buffer-name)
-      (let ((buffer (generate-new-buffer inf-clojure--redirect-buffer-name)))
-        (with-current-buffer buffer
-          (hack-dir-local-variables-non-file-buffer)
-          buffer))))
-
-;; Originally from:
-;;   https://github.com/glycerine/lush2/blob/master/lush2/etc/lush.el#L287
-(defun inf-clojure--process-response (command process &optional beg-regexp end-regexp)
-  "Send COMMAND to PROCESS and return the response.
-Return the result of COMMAND, filtering it from BEG-REGEXP to the
-end of the matching END-REGEXP if non-nil.
-If BEG-REGEXP is nil, the result string will start from (point)
-in the results buffer.  If END-REGEXP is nil, the result string
-will end at (point-max) in the results buffer.  It cuts out the
-output from and including the `inf-clojure-prompt`."
-  (let ((redirect-buffer-name inf-clojure--redirect-buffer-name)
-        (sanitized-command (inf-clojure--sanitize-command command)))
-    (when (not (string-empty-p sanitized-command))
-      (inf-clojure--log-string command "----CMD->")
-      (with-current-buffer (inf-clojure--get-redirect-buffer)
-        (erase-buffer)
-        (comint-redirect-send-command-to-process sanitized-command redirect-buffer-name process nil t))
-      ;; Wait for the process to complete
-      (with-current-buffer (process-buffer process)
-        (while (and (null comint-redirect-completed)
-                    (accept-process-output process 1 0 t))
-          (sleep-for 0.01)))
-      ;; Collect the output
-      (with-current-buffer redirect-buffer-name
-        (goto-char (point-min))
-        (let ((buffer-string (buffer-substring-no-properties (point-min) (point-max))))
-          (pcase-let ((`(,beg-pos ,end-pos ,prompt-pos)
-                       (inf-clojure--string-boundaries buffer-string inf-clojure-prompt beg-regexp end-regexp)))
-            (inf-clojure--log-string buffer-string "<-RES----")
-            (substring buffer-string beg-pos (min end-pos prompt-pos))))))))
-
-(defun inf-clojure--nil-string-match-p (string)
-  "Return non-nil if STRING represents a nil REPL response."
-  (string= (string-trim string) "nil"))
-
-(defun inf-clojure--some (data)
-  "Return DATA unless nil or includes \"nil\" as string."
-  (cond
-   ((null data) nil)
-   ((and (stringp data)
-         (inf-clojure--nil-string-match-p data)) nil)
-   (t data)))
-
-(defun inf-clojure--read-or-nil (response)
-  "Read RESPONSE and return it as data.
-
-If response is nil or includes the \"nil\" string return nil
-instead.
-
-Note that the read operation will always return the first
-readable sexp only."
-  ;; The following reads the first LISP expression
-  (inf-clojure--some
-   (when response
-     (ignore-errors (read response)))))
-
-(defun inf-clojure--process-response-match-p (match-p proc form)
-  "Eval MATCH-P on the response of sending to PROC the input FORM.
-Note that this function will add a \n to the end of the string
-for evaluation, therefore FORM should not include it."
-  (let ((response (inf-clojure--process-response form proc)))
-    (when response (funcall match-p response))))
-
-(defun inf-clojure--some-response-p (proc form)
-  "Return non-nil iff PROC's response after evaluating FORM is not nil."
-  (inf-clojure--process-response-match-p
-   (lambda (string)
-     (not (inf-clojure--nil-string-match-p (string-trim string))))
-   proc form))
-
 ;;;; Commands
 ;;;; ========
-
-(defun inf-clojure-arglists (fn)
-  "Send a query to the inferior Clojure for the arglists for function FN."
-  (when-let* ((proc (inf-clojure-proc 'no-error))
-              (arglists-form (inf-clojure-get-feature proc 'arglists)))
-    (thread-first (format arglists-form fn)
-                  (inf-clojure--process-response proc "(" ")")
-                  (inf-clojure--some))))
 
 (defun inf-clojure-show-arglists (prompt-for-symbol)
   "Send a command to the inferior Clojure to show arglists for FN.
@@ -1437,179 +1138,6 @@ With a prefix arg MACRO-1 uses `macroexpand-1' instead of `macroexpand'."
     (inf-clojure--send-string
      proc
      (format macroexpand-form last-sexp))))
-
-(defun inf-clojure--list-or-nil (data)
-  "Return DATA if and only if it is a list."
-  (when (listp data) data))
-
-(defun inf-clojure-list-completions (response-str)
-  "Parse completions from RESPONSE-STR.
-
-Its only ability is to parse a Lisp list of candidate strings,
-every other EXPR will be discarded and nil will be returned."
-  (thread-first
-      response-str
-    (inf-clojure--read-or-nil)
-    (inf-clojure--list-or-nil)))
-
-(defcustom inf-clojure-completions-fn 'inf-clojure-list-completions
-  "The function that parses completion results.
-
-It is a single-arity function that will receive the REPL
-evaluation result of the completion feature form as string and
-should return elisp data compatible with your completion mode.
-
-The easiest possible data passed in input is a list of
-candidates (e.g.: (\"def\" \"defn\")) but more complex libraries
-like `alexander-yakushev/compliment' can return other things like
-edn.
-
-The expected return depends on the mode that you use for
-completion: usually it is something compatible with
-\\[completion-at-point-functions] but other modes like
-`company-mode' allow an even higher level of sophistication.
-
-The default value is the `inf-clojure-list-completions' function,
-which is able to parse results in list form only.  You can peek
-at its implementation for getting to know some utility functions
-you might want to use in your customization."
-  :type 'function
-  :package-version '(inf-clojure . "2.1.0"))
-
-(defun inf-clojure-completions (expr)
-  "Return completions for the Clojure expression starting with EXPR.
-
-Under the hood it calls the function
-\\[inf-clojure-completions-fn] passing in the result of
-evaluating the completion feature form at the REPL."
-  (let* ((proc (inf-clojure-proc 'no-error))
-         (completion-form (inf-clojure-get-feature proc 'completion t)))
-    (when (and proc completion-form (not (string-blank-p expr)))
-      (let ((completion-expr (format completion-form (substring-no-properties expr))))
-        (funcall inf-clojure-completions-fn
-                 (inf-clojure--process-response completion-expr proc  "(" ")"))))))
-
-(defconst inf-clojure-clojure-expr-break-chars "^][ \"'`><,;|&{()@\\^"
-  "A list of characters that serve as expression boundaries.
-
-See `inf-clojure-completion-bounds-of-expr-at-point'.")
-
-(defun inf-clojure--kw-to-symbol (kw)
-  "Convert the keyword KW to a symbol."
-  (when kw
-    (replace-regexp-in-string "\\`:+" "" kw)))
-
-(defun inf-clojure-completion-bounds-of-expr-at-point ()
-  "Return bounds of expression at point to complete."
-  (when (not (memq (char-syntax (following-char)) '(?w ?_)))
-    (save-excursion
-      (let* ((end (point))
-             (skipped-back (skip-chars-backward inf-clojure-clojure-expr-break-chars))
-             (start (+ end skipped-back))
-             (chars (or (thing-at-point 'symbol)
-                        (inf-clojure--kw-to-symbol (buffer-substring start end)))))
-        (when (> (length chars) 0)
-          (let ((first-char (substring-no-properties chars 0 1)))
-            (when (string-match-p "[^0-9]" first-char)
-              (cons (point) end))))))))
-
-(defun inf-clojure-completion-expr-at-point ()
-  "Return expression at point to complete."
-  (let ((bounds (inf-clojure-completion-bounds-of-expr-at-point)))
-    (and bounds
-         (buffer-substring (car bounds) (cdr bounds)))))
-
-(defun inf-clojure-completion-at-point ()
-  "Retrieve the list of completions and prompt the user.
-Returns the selected completion or nil."
-  (let ((bounds (inf-clojure-completion-bounds-of-expr-at-point)))
-    (when (and bounds (inf-clojure-get-feature (inf-clojure-proc) 'completion 'no-error))
-      (list (car bounds) (cdr bounds)
-            (completion-table-with-cache #'inf-clojure-completions)))))
-
-;;;; ElDoc
-;;;; =====
-
-(defvar inf-clojure-extra-eldoc-commands '("yas-expand")
-  "Extra commands to be added to eldoc's safe commands list.")
-
-(defvar-local inf-clojure-eldoc-last-symbol nil
-  "The eldoc information for the last symbol we checked.")
-
-(defun inf-clojure-eldoc-format-thing (thing)
-  "Format the eldoc THING."
-  (propertize thing 'face 'font-lock-function-name-face))
-
-(defun inf-clojure-eldoc-beginning-of-sexp ()
-  "Move to the beginning of current sexp.
-
-Return the number of nested sexp the point was over or after."
-  (let ((parse-sexp-ignore-comments t)
-        (num-skipped-sexps 0))
-    (condition-case _
-        (progn
-          ;; First account for the case the point is directly over a
-          ;; beginning of a nested sexp.
-          (condition-case _
-              (let ((p (point)))
-                (forward-sexp -1)
-                (forward-sexp 1)
-                (when (< (point) p)
-                  (setq num-skipped-sexps 1)))
-            (error))
-          (while
-              (let ((p (point)))
-                (forward-sexp -1)
-                (when (< (point) p)
-                  (setq num-skipped-sexps (1+ num-skipped-sexps))))))
-      (error))
-    num-skipped-sexps))
-
-(defun inf-clojure-eldoc-info-in-current-sexp ()
-  "Return a list of the current sexp and the current argument index."
-  (save-excursion
-    (let ((argument-index (1- (inf-clojure-eldoc-beginning-of-sexp))))
-      ;; If we are at the beginning of function name, this will be -1.
-      (when (< argument-index 0)
-        (setq argument-index 0))
-      ;; Don't do anything if current word is inside a string, vector,
-      ;; hash or set literal.
-      (if (member (or (char-after (1- (point))) 0) '(?\" ?\{ ?\[))
-          nil
-        (list (inf-clojure-symbol-at-point) argument-index)))))
-
-(defun inf-clojure-eldoc-arglists (thing)
-  "Return the arglists for THING."
-  (when (and thing
-             (not (string= thing ""))
-             (not (string-prefix-p ":" thing)))
-    ;; check if we can used the cached eldoc info
-    (if (string= thing (car inf-clojure-eldoc-last-symbol))
-        (cdr inf-clojure-eldoc-last-symbol)
-      (let ((arglists (inf-clojure-arglists (substring-no-properties thing))))
-        (when arglists
-          (setq inf-clojure-eldoc-last-symbol (cons thing arglists))
-          arglists)))))
-
-(defun inf-clojure-eldoc (callback &rest _ignored)
-  "Backend function for eldoc to show argument list in the echo area.
-CALLBACK is the eldoc callback to invoke with the documentation string."
-  (when (and (inf-clojure-connected-p)
-             inf-clojure-enable-eldoc
-             ;; don't clobber an error message in the minibuffer
-             (not (member last-command '(next-error previous-error))))
-    (let* ((info (inf-clojure-eldoc-info-in-current-sexp))
-           (thing (car info))
-           (value (inf-clojure-eldoc-arglists thing)))
-      (when value
-        (funcall callback (format "%s: %s"
-                                  (inf-clojure-eldoc-format-thing thing)
-                                  value))))))
-
-(defun inf-clojure-eldoc-setup ()
-  "Turn on eldoc mode in the current buffer."
-  (add-hook 'eldoc-documentation-functions #'inf-clojure-eldoc nil t)
-  (apply #'eldoc-add-command inf-clojure-extra-eldoc-commands))
 
 (defun inf-clojure-display-version ()
   "Display the current `inf-clojure' version in the minibuffer."
