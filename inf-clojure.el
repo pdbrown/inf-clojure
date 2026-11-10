@@ -308,18 +308,8 @@ port is an integer, or a string to startup an interpreter like
 (defvar inf-clojure-custom-repl-name nil
   "A string to be used as the repl buffer name.")
 
-(defcustom inf-clojure-prompt "^[^=> \n]+=> *"
+(defcustom inf-clojure-prompt-regexp "^[^=> \n]+=> *"
   "Regexp to recognize prompts in the Inferior Clojure mode."
-  :type 'regexp)
-
-(defcustom inf-clojure-subprompt " *#_=> *"
-  "Regexp to recognize subprompts in the Inferior Clojure mode."
-  :type 'regexp)
-
-(defcustom inf-clojure-comint-prompt-regexp "^\\( *#_\\|[^=> \n]+\\)=> *"
-  "Regexp to recognize both main prompt and subprompt for comint.
-This should usually be a combination of `inf-clojure-prompt' and
-`inf-clojure-subprompt'."
   :type 'regexp)
 
 (defcustom inf-clojure-repl-use-same-window nil
@@ -418,7 +408,7 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
   following expression.  Paragraphs are separated only by blank lines.
   Semicolons start comments.  If you accidentally suspend your process,
   use \\[comint-continue-subjob] to continue it."
-  (setq-local comint-prompt-regexp inf-clojure-comint-prompt-regexp)
+  (setq-local comint-prompt-regexp inf-clojure-prompt-regexp)
   (setq-local mode-line-process '(":%s"))
   ;; NOTE: Using Tree-sitter based syntax highlighting in comint
   ;; buffer is currently not possible.
@@ -441,10 +431,6 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
 (defun inf-clojure-input-filter (str)
   "Return t if STR does not match `inf-clojure-filter-regexp'."
   (not (string-match inf-clojure-filter-regexp str)))
-
-(defun inf-clojure-remove-subprompts (string)
-  "Remove subprompts from STRING."
-  (replace-regexp-in-string inf-clojure-subprompt "" string))
 
 (defvar-local inf-clojure--filtering-output nil
   "Non-nil while filtering output from a programmatic inf-clojure command.
@@ -630,7 +616,7 @@ OUTPUT is the latest data received from the process"
     (when (buffer-live-p server-buffer)
       (with-current-buffer server-buffer
         (insert output)))
-    (let ((prompt-displayed (string-match inf-clojure-prompt output)))
+    (let ((prompt-displayed (string-match inf-clojure-prompt-regexp output)))
       (when prompt-displayed
 	(with-current-buffer server-buffer
 	  (when inf-clojure-socket-callback
