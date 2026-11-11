@@ -75,19 +75,15 @@
                                     (node-babashka . "nbb")
                                     (joker . "joker")))
 
-(defvar inf-clojure-pid nil)
-
 (defvar inf-clojure-buffer nil
   "The current `inf-clojure' process buffer.
 
 MULTIPLE PROCESS SUPPORT
 ===========================================================================
-To run multiple Clojure processes, you start the first up
-with \\[inf-clojure].  It will be in a buffer named *inf-clojure*.
-Rename this buffer with \\[rename-buffer].  You may now start up a new
-process with another \\[inf-clojure].  It will be in a new buffer,
-named *inf-clojure*.  You can switch between the different process
-buffers with \\[switch-to-buffer].
+To run multiple Clojure processes, start each with a separate invocation
+of \\[inf-clojure] or \\[inf-clojure-socket-repl]. REPL and socket
+server buffers have unique names, which include the current project if
+any.
 
 Commands that send text from source buffers to Clojure processes --
 like `inf-clojure-eval-defun' -- have to choose a
@@ -95,9 +91,9 @@ process to send to, when you have more than one Clojure process around.  This
 is determined by the global variable `inf-clojure-buffer'.  Suppose you
 have three inferior Clojures running:
     Buffer              Process
-    foo                 `inf-clojure'
+    foo                 inf-clojure
     bar                 inf-clojure<2>
-    *inf-clojure*     inf-clojure<3>
+    *inf-clojure*       inf-clojure<3>
 If you do a \\[inf-clojure-eval-defun] command on some Clojure source code,
 what process do you send it to?
 
@@ -123,47 +119,29 @@ has been found.  See also variable `inf-clojure-buffer'."
       (unless no-error
         (error "No Clojure subprocess; see variable `inf-clojure-buffer'"))))
 
-(defun inf-clojure-repl-p (&optional buf)
-  "Indicates if BUF is an `inf-clojure' REPL.
-If BUF is nil then defaults to the current buffer.
-Checks the mode and that there is a live process."
-  (let ((buf (or buf (current-buffer))))
-    (and (with-current-buffer buf (derived-mode-p 'inf-clojure-mode))
-         (get-buffer-process buf)
-         (process-live-p (get-buffer-process buf)))))
+(defun inf-clojure-select-repl-buffer ()
+  "Find or select an ‘inf-clojure’ buffer to operate on.
 
-(defun inf-clojure-repls ()
-  "Return a list of all `inf-clojure' REPL buffers."
-  (let (repl-buffers)
-    (dolist (b (buffer-list))
-      (when (inf-clojure-repl-p b)
-        (push (buffer-name b) repl-buffers)))
-    repl-buffers))
+Useful for commands that can invoked outside of an ‘inf-clojure’ buffer
+\\(e.g. from a Clojure buffer\\)."
+  ;; if we're in a inf-clojure buffer we simply return in
+  (if (derived-mode-p 'inf-clojure-mode)
+      (current-buffer)
+    ;; otherwise we sift through all the inf-clojure buffers that are available
+    (let ((repl-buffers (cl-remove-if-not (lambda (buf)
+                                            (with-current-buffer buf
+                                              (derived-mode-p 'inf-clojure-mode)))
+                                          (buffer-list))))
+      (cond
+       ((null repl-buffers) (user-error "No inf-clojure REPL buffers found"))
+       ((= (length repl-buffers) 1) (car repl-buffers))
+       (t (get-buffer (completing-read "Select inf-clojure REPL: "
+                                       (mapcar #'buffer-name repl-buffers))))))))
 
-(defun inf-clojure--prompt-repl-buffer (prompt)
-  "Prompt the user to select an `inf-clojure' repl buffer.
-PROMPT is a string to prompt the user.
-Returns nil when no buffer is selected."
-  (let ((repl-buffers (inf-clojure-repls)))
-    (if (> (length repl-buffers) 0)
-        (when-let* ((repl-buffer (completing-read prompt repl-buffers nil t)))
-          (get-buffer repl-buffer))
-      (user-error "No buffers have an inf-clojure process"))))
-
-(defun inf-clojure-set-repl (always-ask)
-  "Set an `inf-clojure' buffer as the active (default) REPL.
-If in a REPL buffer already, use that unless a prefix is used (or
-ALWAYS-ASK).  Otherwise get a list of all active `inf-clojure'
-REPLS and offer a choice.  It's recommended to rename REPL
-buffers after they are created with `rename-buffer'."
-  (interactive "P")
-  (when-let* ((new-repl-buffer
-               (if (or always-ask
-                       (not (inf-clojure-repl-p)))
-                   (inf-clojure--prompt-repl-buffer "Select default REPL: ")
-                 (current-buffer))))
-    (setq inf-clojure-buffer new-repl-buffer)
-    (message "Current inf-clojure REPL set to %s" new-repl-buffer)))
+(defun inf-clojure-set-repl ()
+  "Set an `inf-clojure' buffer as the active (default) REPL."
+  (setq inf-clojure-buffer (inf-clojure-select-repl-buffer))
+  (message "Current inf-clojure REPL set to %s" chosen-repl-buffer))
 
 (defgroup inf-clojure nil
   "Run an external Clojure process (REPL) in an Emacs buffer."
@@ -182,7 +160,7 @@ buffers after they are created with `rename-buffer'."
 Also see the description of `comint-prompt-read-only'."
   :type 'boolean)
 
-(defcustom inf-clojure-filter-regexp
+(defcustom inf-clojure-input-filter-regexp
   "\\`\\s *\\(:\\(\\w\\|\\s_\\)\\)?\\s *\\'"
   "What not to save on inferior Clojure's input history.
 Input matching this regexp is not saved on the input history in Inferior Clojure
@@ -198,14 +176,15 @@ source file by all `inf-clojure' commands."
   :type '(repeat symbol)
   :safe (lambda (val) (and (listp val) (cl-every #'symbolp val))))
 
-(defun inf-clojure--modeline-info ()
-  "Return modeline info for `inf-clojure-minor-mode'.
-Either \"no process\" or \"buffer-name(pid)\""
+(defun inf-clojure--get-mode-line ()
+  "Return modeline for `inf-clojure-minor-mode'."
   (if (and (bufferp inf-clojure-buffer)
            (buffer-live-p inf-clojure-buffer))
       (with-current-buffer inf-clojure-buffer
-        (format "%s(%s)" (buffer-name (current-buffer)) inf-clojure-pid))
-    "no process"))
+        (thread-last (buffer-name (current-buffer))
+                     (replace-regexp-in-string "^\\*" "" )
+                     (replace-regexp-in-string "\\*$" "" )))
+    "inf-clojure[nil]"))
 
 (defvar inf-clojure-mode-map
   (let ((map (make-sparse-keymap)))
@@ -245,6 +224,7 @@ Either \"no process\" or \"buffer-name(pid)\""
     (define-key map (kbd "C-c C-n") #'inf-clojure-eval-form-and-next)
     (define-key map (kbd "C-c C-j") inf-clojure-insert-commands-map)
     (define-key map (kbd "C-c C-z") #'inf-clojure-switch-to-repl)
+    (define-key map (kbd "C-c C-t") #'inf-clojure-restart)
     (define-key map (kbd "C-c C-q") #'inf-clojure-quit)
     (define-key map (kbd "C-c M-c") #'inf-clojure-connect)
     (easy-menu-define inf-clojure-minor-mode-menu map
@@ -262,8 +242,14 @@ Either \"no process\" or \"buffer-name(pid)\""
     map))
 
 ;;;###autoload
+(with-eval-after-load 'clojure-mode
+  (define-key clojure-mode-map (kbd "C-c M-k") #'inf-clojure)
+  (define-key clojure-mode-map (kbd "C-c M-n") #'inf-clojure-socket-repl)
+  (define-key clojure-mode-map (kbd "C-c M-c") #'inf-clojure-connect))
+
+;;;###autoload
 (defcustom inf-clojure-mode-line
-  '(:eval (format " inf-clojure[%s]" (inf-clojure--modeline-info)))
+  '(:eval (format " %s" (inf-clojure--get-mode-line)))
   "Mode line lighter for `inf-clojure-minor-mode'.
 
 The value of this variable is a mode line template as in
@@ -305,11 +291,28 @@ port is an integer, or a string to startup an interpreter like
 \"planck\"."
    :type '(choice string (cons string integer) (const nil)))
 
-(defvar inf-clojure-custom-repl-name nil
-  "A string to be used as the repl buffer name.")
-
 (defcustom inf-clojure-prompt-regexp "^[^=> \n]+=> *"
-  "Regexp to recognize prompts in the Inferior Clojure mode."
+  "Regexp to recognize prompts printed by the clojure REPL.
+Unused by default: the REPL buffer assumes prompts are the most recent
+output that doesn't end with a newline. See `comint-use-prompt-regexp'."
+  :type 'regexp)
+
+(defcustom inf-clojure-socket-ready-regexp "^[^=> \n]+=> *"
+  "Regexp to detect whether clojure socket REPL has started.
+When you run `inf-clojure-socket-repl', inf-clojure starts the
+clojure (server) process, waits for it to print a line that matches this
+regexp, then attempts to connect to a socket repl.
+
+If the clojure server process was started by the 'clojure' command with
+no special args (other than a socket repl config), it will start a
+console repl only after the socket repl has begun accepting connections,
+and print a first prompt to its console output. By default,
+`inf-clojure-socket-ready-regexp' matches such a prompt.
+
+Note that the system property based
+configuration system to start servers and socket repls, e.g.:
+  -J-Dclojure.server.repl=\"{:port %d :accept clojure.core.server/repl}\"
+doesn't run until after user.clj is loaded."
   :type 'regexp)
 
 (defcustom inf-clojure-repl-use-same-window nil
@@ -365,9 +368,7 @@ See command `inf-clojure-minor-mode'."
 (define-derived-mode inf-clojure-mode comint-mode "Inferior Clojure"
   "Major mode for interacting with an inferior Clojure process.
 Runs a Clojure interpreter as a subprocess of Emacs, with Clojure I/O
-through an Emacs buffer. Variables `inf-clojure-prompt-regexp' and
-`inf-clojure-filter-regexp' can customize this mode for different
-Clojure REPLs.
+through an Emacs buffer.
 
 For information on running multiple processes in multiple buffers, see
 documentation for variable `inf-clojure-buffer'.
@@ -428,8 +429,8 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
       (buffer-substring (max (point) (comint-line-beginning-position)) end))))
 
 (defun inf-clojure-input-filter (str)
-  "Return t if STR does not match `inf-clojure-filter-regexp'."
-  (not (string-match inf-clojure-filter-regexp str)))
+  "Return t if STR does not match `inf-clojure-input-filter-regexp'."
+  (not (string-match inf-clojure-input-filter-regexp str)))
 
 (defun inf-clojure-clear-repl-buffer ()
   "Clear the REPL buffer."
@@ -440,21 +441,14 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
     (let ((comint-buffer-maximum-size 0))
       (comint-truncate-buffer))))
 
-(defun inf-clojure--swap-to-buffer-window (to-buffer)
-  "Switch to `TO-BUFFER''s window."
-  (let ((pop-up-frames
-         ;; Be willing to use another frame
-         ;; that already has the window in it.
-         (or pop-up-frames
-             (get-buffer-window to-buffer t))))
-    (pop-to-buffer to-buffer '(display-buffer-reuse-window . ()))))
-
 (defun inf-clojure-switch-to-repl (eob-p)
   "Switch to the inferior Clojure process buffer.
 With prefix argument EOB-P, positions cursor at end of buffer."
   (interactive "P")
   (if (get-buffer-process inf-clojure-buffer)
-      (inf-clojure--swap-to-buffer-window inf-clojure-buffer)
+      ;; Be willing to use another frame that already has the window in it.
+      (pop-to-buffer inf-clojure-buffer '(display-buffer-reuse-window
+                                          (reusable-frames . 0)))
     (call-interactively #'inf-clojure))
   (when eob-p
     (push-mark)
@@ -476,7 +470,7 @@ With prefix argument EOB-P, positions cursor at end of buffer."
 You can pass the target BUFFER as an optional parameter
 to suppress the usage of the target buffer discovery logic."
   (interactive)
-  (let ((target-buffer (or buffer (inf-clojure-select-target-repl))))
+  (let ((target-buffer (or buffer (inf-clojure-select-repl-buffer))))
     (when (get-buffer-process target-buffer)
       (delete-process target-buffer))
     (kill-buffer target-buffer)))
@@ -487,7 +481,7 @@ to suppress the usage of the target buffer discovery logic."
 You can pass the target BUFFER as an optional parameter
 to suppress the usage of the target buffer discovery logic."
   (interactive)
-  (let* ((target-buffer (or buffer (inf-clojure-select-target-repl)))
+  (let* ((target-buffer (or buffer (inf-clojure-select-repl-buffer)))
          (target-buffer-name (buffer-name target-buffer)))
     ;; TODO: Try to recycle the old buffer instead of killing and recreating it
     (inf-clojure-quit target-buffer)
@@ -516,6 +510,15 @@ The name is simply the final segment of the path."
 
 (defvar clojure-ts-mode-syntax-table)
 
+(defun inf-clojure--generate-repl-name (tag &optional project-dir pid host port)
+  (generate-new-buffer-name
+   (format "%s[%s%s%s%s]"
+           tag
+           (if project-dir (inf-clojure--project-name project-dir) "")
+           (if pid (format ".%d" pid) "")
+           (if host (format "@%s" host) "")
+           (if port (format ":%d" port) ""))))
+
 ;;;###autoload
 (defun inf-clojure (cmd &optional suppress-message)
   "Run an inferior Clojure process, input and output via buffer *inf-clojure*.
@@ -542,35 +545,36 @@ process buffer for a list of commands.)"
                                           nil
                                           'confirm-after-completion))))
   (let* ((project-dir (inf-clojure--project-dir))
-         (process-buffer-name (or
-                               inf-clojure-custom-repl-name
-                               (if project-dir
-                                   (format "inf-clojure %s" (inf-clojure--project-name project-dir))
-                                 "inf-clojure")))
-         ;; comint adds the asterisks to both sides
-         (repl-buffer-name (format "*%s*" process-buffer-name)))
-    ;; Create a new comint buffer if needed
-    (unless (comint-check-proc repl-buffer-name)
-      ;; run the new process in the project's root when in a project folder
-      (let ((default-directory (or project-dir default-directory))
-            (cmdlist (if (consp cmd)
-                         (list cmd)
-                       (split-string-and-unquote cmd))))
-        (unless suppress-message
-          (message "Starting Clojure REPL via `%s'..." cmd))
-        (with-current-buffer (apply #'make-comint
-                                    process-buffer-name (car cmdlist) nil (cdr cmdlist))
-          (inf-clojure-mode)
-          (set-syntax-table (pcase (car (inf-clojure--get-preferred-major-modes))
-                              ('clojure-ts-mode clojure-ts-mode-syntax-table)
-                              (_ clojure-mode-syntax-table)))
-          (hack-dir-local-variables-non-file-buffer))))
-    ;; update the default comint buffer and switch to it
-    (setq inf-clojure-buffer (get-buffer repl-buffer-name))
-    (if inf-clojure-repl-use-same-window
-        (pop-to-buffer-same-window repl-buffer-name)
-      (pop-to-buffer repl-buffer-name))
-    repl-buffer-name))
+         (cmdlist (if (consp cmd)
+                      (list cmd)
+                    (split-string-and-unquote cmd))))
+    (unless suppress-message
+      (message "Starting Clojure REPL via `%s'..." cmd))
+    (with-current-buffer
+        (let ((default-directory (or project-dir default-directory)))
+          (apply #'make-comint-in-buffer
+                 (inf-clojure--generate-repl-name "inf-clojure" project-dir)
+                 (generate-new-buffer-name " inf-clojure-tmp")
+                 (car cmdlist) nil (cdr cmdlist)))
+      (rename-buffer (format "*%s*"
+                             (inf-clojure--make-repl-name
+                              "inf-clojure"
+                              project-dir
+                              (process-id (get-buffer-process (current-buffer)))
+                              (when (consp cmd)
+                                (car cmd))
+                              (when (consp cmd)
+                                (cdr cmd)))))
+      (inf-clojure-mode)
+      (setq inf-clojure-buffer (current-buffer))
+      (set-syntax-table (pcase (car (inf-clojure--get-preferred-major-modes))
+                          ('clojure-ts-mode clojure-ts-mode-syntax-table)
+                          (_ clojure-mode-syntax-table)))
+      (hack-dir-local-variables-non-file-buffer)
+      (if inf-clojure-repl-use-same-window
+          (pop-to-buffer-same-window (current-buffer))
+        (pop-to-buffer (current-buffer)))
+      (current-buffer))))
 
 ;;;###autoload
 (defun inf-clojure-connect (host port &optional suppress-message)
@@ -589,12 +593,11 @@ prevent showing the startup message."
 
 (defun inf-clojure-socket-filter (process output)
   "A filter that gets triggered each time the socket receives new OUTPUT.
-This function prints out the output received but also
-watches for a prompt using the `inf-clojure-prompt-regexp', once
-this happens a callback is triggered if available.  The callback
-is intended to be used to trigger a `inf-clojure-connect' once we
-can determine that a socket REPL is ready to receive a
-connection.
+This function prints out the output received but also watches for a
+prompt or other output using the `inf-clojure-socket-ready-regexp', once
+this happens a callback is triggered if available. The callback is
+intended to be used to trigger a `inf-clojure-connect' once we can
+determine that a socket REPL is ready to receive a connection.
 
 PROCESS is the process object that is being filtered.
 
@@ -603,11 +606,10 @@ OUTPUT is the latest data received from the process"
     (when (buffer-live-p server-buffer)
       (with-current-buffer server-buffer
         (insert output)))
-    (let ((prompt-displayed (string-match inf-clojure-prompt-regexp output)))
-      (when prompt-displayed
-	(with-current-buffer server-buffer
-	  (when inf-clojure-socket-callback
-	    (funcall inf-clojure-socket-callback)))))))
+    (when (string-match inf-clojure-socket-ready-regexp output)
+      (with-current-buffer server-buffer
+	(when inf-clojure-socket-callback
+	  (funcall inf-clojure-socket-callback))))))
 
 (defun inf-clojure-socket-repl-sentinel (process _event)
   "Ensures socket REPLs are cleaned up when the REPL buffer is closed.
@@ -631,18 +633,21 @@ EVENT is the event that triggered this function to be called."
 
 (defcustom inf-clojure-socket-repl-port
   nil
-  "Port to be used when creating a socket REPL via `inf-clojure-socket-repl'.
-If left as nil a random port will be selected between 5500-6000."
+  "TCP port number rendered into the chosen
+`inf-clojure-socket-repl-startup-forms' template, used by
+`inf-clojure-socket-repl'. If left as nil, a random port will be selected
+between 15000-25000."
   :type '(choice integer (const nil))
   :package-version '(inf-clojure . "3.3.0"))
 
 ;;;###autoload
 (defun inf-clojure-socket-repl (cmd)
-  "Start a socket REPL server and connects to it via `inf-clojure-connect'.
-CMD is the command line instruction used to start the socket
-REPL.  It should be a string with \"%d\" in it to take a random
-port.  Set `inf-clojure-custom-startup' or choose from the
-defaults provided in `inf-clojure-socket-repl-startup-forms'."
+  "Start a socket REPL server and connect to it with `inf-clojure-connect'.
+CMD is the command line instruction used to start the socket REPL. If it
+contains a %d format pattern, that will be replaced by the specified or
+randomly generated `inf-clojure-socket-repl-port' number. Set
+`inf-clojure-custom-startup' or choose from the defaults provided in
+`inf-clojure-socket-repl-startup-forms'."
   (interactive (list (or (unless current-prefix-arg
                            inf-clojure-custom-startup)
                          (completing-read "Select Clojure socket REPL startup command: "
@@ -650,29 +655,39 @@ defaults provided in `inf-clojure-socket-repl-startup-forms'."
                                           nil
                                           'confirm-after-completion))))
   (let* ((host "localhost")
-         (port (or inf-clojure-socket-repl-port (+ 5500 (random 500))))
+         (port (or inf-clojure-socket-repl-port (+ 15000 (random 10000))))
          (project-dir (inf-clojure--project-dir))
-         (project-name (inf-clojure--project-name (or project-dir "standalone")))
-         (socket-process-name (format "*%s-socket-server*" project-name))
-         (socket-buffer (get-buffer-create
-                         (format "*%s-socket*" project-name)))
-         (socket-cmd (format cmd port))
-         (sock (let ((default-directory (or project-dir default-directory)))
-                 (start-file-process-shell-command
-                  socket-process-name socket-buffer
-                  socket-cmd))))
-    (with-current-buffer socket-buffer
+         (server-name (inf-clojure--generate-repl-name "inf-clojure-server"
+                                                       project-dir
+                                                       nil
+                                                       host
+                                                       port))
+         (server-buffer (generate-new-buffer " inf-clojure-tmp"))
+         (server-cmd (format cmd port))
+         (server (let ((default-directory (or project-dir default-directory)))
+                   (start-file-process-shell-command server-name server-buffer server-cmd))))
+    (with-current-buffer server-buffer
+      (rename-buffer (format "*%s*"
+                             (inf-clojure--make-repl-name
+                              "inf-clojure-server"
+                              project-dir
+                              (process-id (get-buffer-process (current-buffer)))
+                              host
+                              port)))
       (setq-local
        inf-clojure-socket-callback
        (lambda ()
          (let* ((created-repl-buffer (inf-clojure-connect host port :suppress-message)))
            (with-current-buffer (get-buffer created-repl-buffer)
-             (setq-local inf-clojure-socket-buffer socket-buffer)
+             (setq-local inf-clojure-socket-buffer server-buffer)
              (set-process-sentinel
               (get-buffer-process (current-buffer))
               #'inf-clojure-socket-repl-sentinel))))))
-    (set-process-filter sock #'inf-clojure-socket-filter)
-    (message "Starting clojure socket REPL server at %s:%d with %s" host port socket-cmd)))
+    (set-process-filter server #'inf-clojure-socket-filter)
+    (message "Starting clojure socket REPL server at %s:%d with %s" host port server-cmd)
+    (if inf-clojure-repl-use-same-window
+        (pop-to-buffer-same-window server-buffer)
+      (pop-to-buffer server-buffer))))
 
 (defun inf-clojure-eval-region (start end &optional and-go)
   "Send the current region to the inferior Clojure process.
@@ -774,25 +789,6 @@ Indent FORM.  FORM is expected to have been trimmed."
   "Display the current `inf-clojure' version in the minibuffer."
   (interactive)
   (message "inf-clojure (version %s)" inf-clojure-version))
-
-(defun inf-clojure-select-target-repl ()
-  "Find or select an ‘inf-clojure’ buffer to operate on.
-
-Useful for commands that can invoked outside of an ‘inf-clojure’ buffer
-\\(e.g. from a Clojure buffer\\)."
-  ;; if we're in a inf-clojure buffer we simply return in
-  (if (eq major-mode 'inf-clojure-mode)
-      (current-buffer)
-    ;; otherwise we sift through all the inf-clojure buffers that are available
-    (let ((repl-buffers (cl-remove-if-not (lambda (buf)
-                                            (with-current-buffer buf
-                                              (eq major-mode 'inf-clojure-mode)))
-                                          (buffer-list))))
-      (cond
-       ((null repl-buffers) (user-error "No inf-clojure buffers found"))
-       ((= (length repl-buffers) 1) (car repl-buffers))
-       (t (get-buffer (completing-read "Select target inf-clojure buffer: "
-                                       (mapcar #'buffer-name repl-buffers))))))))
 
 (provide 'inf-clojure)
 
