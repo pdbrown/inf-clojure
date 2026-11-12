@@ -1,57 +1,43 @@
 ;;; inf-clojure.el --- Basic interaction with a Clojure REPL -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Phil Brown
 ;; Copyright © 2014-2026 Bozhidar Batsov
+;; Copyright (C) 1988-2025 Free Software Foundation, Inc.
 
-;; Authors: Bozhidar Batsov <bozhidar@batsov.dev>
-;;       Olin Shivers <shivers@cs.cmu.edu>
-;; Maintainer: Bozhidar Batsov <bozhidar@batsov.dev>
-;; URL: https://github.com/clojure-emacs/inf-clojure
+;; Authors:
+;;   Phil Brown <pdbrown.git@gmail.com>
+;;   Bozhidar Batsov <bozhidar@batsov.dev>
+;;   Olin Shivers <shivers@cs.cmu.edu>
+;; Maintainer: Phil Brown <pdbrown.git@gmail.com>
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;; Keywords: processes, comint, clojure
-;; Version: 3.4.0
+;; Version: 3.5.0
 ;; Package-Requires: ((emacs "28.1") (clojure-mode "5.11"))
 
 ;; This file is not part of GNU Emacs.
 
-;; GNU Emacs is free software: you can redistribute it and/or modify
+;; inf-clojure is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
 ;; the Free Software Foundation, either version 3 of the License, or
 ;; (at your option) any later version.
 
-;; GNU Emacs is distributed in the hope that it will be useful,
+;; inf-clojure is distributed in the hope that it will be useful,
 ;; but WITHOUT ANY WARRANTY; without even the implied warranty of
 ;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with inf-clojure.  If not, see <http://www.gnu.org/licenses/>.
 
 ;;; Commentary:
-;;
-;; This package provides basic interaction with a Clojure subprocess (REPL).
+
+;; This package provides interaction with a REPL hosted by a Clojure process.
 ;; It's based on ideas from the popular `inferior-lisp` package.
-;;
-;; `inf-clojure` has two components - a nice Clojure REPL (`inf-clojure-mode`)
+;; `inf-clojure` has two components - a Clojure REPL (`inf-clojure-mode`)
 ;; and a minor mode (`inf-clojure-minor-mode`), which extends `clojure-mode`
 ;; with commands to evaluate forms directly in the REPL.
-;;
-;; `inf-clojure` provides a set of essential features for interactive
-;; Clojure/ClojureScript/ClojureCLR development:
-;;
-;; * REPL
-;; * Interactive code evaluation
-;; * Code completion
-;; * Definition lookup
-;; * Documentation lookup
-;; * ElDoc
-;; * Apropos
-;; * Macroexpansion
-;; * Namespace reloading
-;; * Connecting to socket REPLs
-;;
-;; It supports many Clojure runtimes including Clojure (JVM), ClojureScript,
-;; ClojureCLR, babashka, Planck, and Joker.
-;;
-;; For a more powerful/full-featured solution see https://github.com/clojure-emacs/cider.
 
 ;;; Code:
 
@@ -139,6 +125,7 @@ Useful for commands that can invoked outside of an ‘inf-clojure’ buffer
                                        (mapcar #'buffer-name repl-buffers))))))))
 
 (defun inf-clojure-set-repl ()
+  (interactive)
   "Set an `inf-clojure' buffer as the active (default) REPL."
   (setq inf-clojure-buffer (inf-clojure-select-repl-buffer))
   (message "Current inf-clojure REPL set to %s" chosen-repl-buffer))
@@ -227,6 +214,7 @@ source file by all `inf-clojure' commands."
     (define-key map (kbd "C-c C-t") #'inf-clojure-restart)
     (define-key map (kbd "C-c C-q") #'inf-clojure-quit)
     (define-key map (kbd "C-c M-c") #'inf-clojure-connect)
+    (define-key map (kbd "C-c M-r") #'inf-clojure-set-repl)
     (easy-menu-define inf-clojure-minor-mode-menu map
       "Inferior Clojure Minor Mode Menu"
       '("Inf-Clojure"
@@ -330,6 +318,28 @@ All buffers in `clojure-mode' will automatically be in
   :safe #'booleanp
   :package-version '(inf-clojure . "3.1.0"))
 
+(defcustom inf-clojure-process-connection-type 'pty
+  "Control type of device used to communicate with subprocesses started
+by inf-clojure. The symbol pty means means use a pseudo-terminal, nil
+means use pipes.
+
+Some clojure programs require a pty, and a pty enables job-control
+features such as `comint-interrupt-subjob' for subprocess groups. Using
+a pipe avoids the PTY canonical-mode input line limit, which can cause
+`inf-clojure-mode' to hang when sending long forms to the REPL. See
+`comint-max-line-length' for the line-length limits that apply to your
+OS when using a pty.
+
+If you need both a pty and to send long forms, you can use a socket
+repl, see `inf-clojure-socket-repl', or disable the pty's canonical
+mode, see \"Details and quirks\" section of `inf-clojure' docstring."
+  ;; This defcustom was adapted from
+  ;; https://github.com/p4v4n/inf-clojure/blob/1276d2d3337764a02e5589751e04a90f763c524d/inf-clojure.el
+  :type '(choice (const :tag "Pipe (avoids PTY line limit)" nil)
+                 (const :tag "PTY (job control, but line length limit)" 'pty))
+  :package-version '(inf-clojure . "3.5.0"))
+
+
 (defun inf-clojure--get-preferred-major-modes ()
   "Return list of preferred major modes that are actually available."
   (cl-remove-if-not (lambda (mode) (featurep mode))
@@ -366,9 +376,12 @@ See command `inf-clojure-minor-mode'."
       (inf-clojure-minor-mode -1))))
 
 (define-derived-mode inf-clojure-mode comint-mode "Inferior Clojure"
-  "Major mode for interacting with an inferior Clojure process.
-Runs a Clojure interpreter as a subprocess of Emacs, with Clojure I/O
-through an Emacs buffer.
+  "Major mode for interacting with an inferior clojure process.
+Mode `inf-clojure-mode' derives from `comint-mode' and implements a REPL
+client connected to a local in-buffer clojure process or remote REPL
+server over TCP. Use one of `inf-clojure', `inf-clojure-socket-repl', or
+'inf-clojure-connect' to start and/or connect to a clojure REPL, see
+below.
 
 For information on running multiple processes in multiple buffers, see
 documentation for variable `inf-clojure-buffer'.
@@ -389,6 +402,7 @@ Clojure source.
     a \\[universal-argument] causes a switch to the Clojure process buffer after
     sending the text.
 
+
 Commands:\\<inf-clojure-mode-map>
 \\[comint-send-input] after the end of the process' output sends the text from
     the end of process to point.
@@ -407,9 +421,47 @@ If `comint-use-prompt-regexp' is nil (the default), \\[comint-insert-input] on
 \\[indent-sexp] does \\[clojure-indent-line] on each line starting within
   following expression.  Paragraphs are separated only by blank lines.
   Semicolons start comments.  If you accidentally suspend your process,
-  use \\[comint-continue-subjob] to continue it."
+  use \\[comint-continue-subjob] to continue it.
+
+
+Entrypoints:
+
+Run `inf-clojure' to start a REPL and process in the same
+`inf-clojure-mode' buffer.
+
+      +- *inf-clojure* -------+
+      |                       |
+      |  [Clojure process]    |
+      |                       |
+      |  user=>               |
+      +-----------------------+
+
+Run `inf-clojure-socket-repl' to start a process in a separate server
+buffer, then connect to it from an `inf-clojure-mode' REPL buffer over
+TCP.
+
+      +- *inf-clojure* -------+      +- *inf-clojure-server* ---+
+      |                       |      |                          |
+      |  [Comint TCP client] <----------> Clojure process       |
+      |                       |      |                          |
+      |  user=>               |      +--------------------------+
+      +-----------------------+
+
+Run `inf-clojure-connect' to open an `inf-clojure-mode' REPL buffer and
+connect it to a process serving a REPL over TCP.
+
+      +- *inf-clojure* -------+
+      |                       |
+      |  [Comint TCP client] <----------> Clojure process
+      |                       |
+      |  user=>               |
+      +-----------------------+"
   (setq-local comint-prompt-regexp inf-clojure-prompt-regexp)
   (setq-local mode-line-process '(":%s"))
+  ;; Syntax highlighting for input at REPL prompt before it's sent to clojure.
+  (setq-local comint-indirect-setup-function #'clojure-mode)
+  (comint-fontify-input-mode)
+  ;; Syntax highlighting for output from REPL.
   ;; NOTE: Using Tree-sitter based syntax highlighting in comint
   ;; buffer is currently not possible.
   (clojure-mode-variables)
@@ -520,10 +572,8 @@ The name is simply the final segment of the path."
            (if port (format ":%d" port) ""))))
 
 ;;;###autoload
-(defun inf-clojure (cmd &optional suppress-message)
-  "Run an inferior Clojure process, input and output via buffer *inf-clojure*.
-If there is a process already running in *inf-clojure*, just
-switch to that buffer.
+(defun inf-clojure (cmd)
+  "Start a clojure subprocess and open a new buffer connected to its REPL.
 
 CMD is a string which serves as the startup command or a cons of
 host and port.
@@ -532,12 +582,34 @@ Prompts user for REPL startup command and REPL type if not inferrable
 from startup command. Uses `inf-clojure-custom-startup' if set. Use a
 prefix to prevent using these when they are set.
 
-Prints a message that it has connected to the host and port
-unless SUPPRESS-MESSAGE is truthy.
-
  Runs the hooks from `inf-clojure-mode-hook' (after the
 `comint-mode-hook' is run).  \(Type \\[describe-mode] in the
-process buffer for a list of commands.)"
+process buffer for a list of commands.)
+
+
+Details and quirks:
+
+`inf-clojure' creates a new buffer named like *inf-clojure*, starts a
+clojure process in it, and activates `inf-clojure-mode', which is
+derived from `comint-mode', to handle input and output to and from the
+process and its REPL. By default, clojure starts 'clojure.main/repl'
+which reads from stdin and writes to stdout and stderr. Those file
+descriptors point to either a pty device (the default) or pipes set up
+by comint depending on the value of
+`inf-clojure-process-connection-type'. Pty devices buffer input by line
+which imposes a maximum line length, see `comint-max-line-length', and
+comint (and thus your REPL) will hang forever if it tries to send a line
+longer than the limit. Work around this using pipes, either by setting
+`inf-clojure-process-connection-type', or also by using a socket or
+remote repl, see `inf-clojure-socket-repl' and `inf-clojure-connect'.
+Or, you can disable the pty's line buffering feature. On Linux and
+Macos, turn off line buffering by disabling the pty's \"canonical
+mode\".
+
+  (clojure.java.process/exec {:in :inherit} \"stty\" \"-icanon\")
+  ;; Note clojure.java.process requires clojure version 1.12
+
+See also https://unix.stackexchange.com/questions/643777/is-there-any-limit-on-line-length-when-pasting-to-a-terminal-in-linux"
   (interactive (list (or (unless current-prefix-arg
                            inf-clojure-custom-startup)
                          (completing-read "Select Clojure REPL startup command: "
@@ -547,17 +619,22 @@ process buffer for a list of commands.)"
   (let* ((project-dir (inf-clojure--project-dir))
          (cmdlist (if (consp cmd)
                       (list cmd)
-                    (split-string-and-unquote cmd))))
-    (unless suppress-message
-      (message "Starting Clojure REPL via `%s'..." cmd))
+                    (split-string-and-unquote cmd)))
+         (process-connection-type inf-clojure-process-connection-type))
+    (if (consp cmd)
+        (message "Connecting to Clojure REPL at `%s:%d'" (car cmd) (cdr cmd))
+      (message "Starting Clojure REPL with `%s'" cmd))
     (with-current-buffer
         (let ((default-directory (or project-dir default-directory)))
           (apply #'make-comint-in-buffer
                  (inf-clojure--generate-repl-name "inf-clojure" project-dir)
                  (generate-new-buffer-name " inf-clojure-tmp")
+
                  (car cmdlist) nil (cdr cmdlist)))
+
+      ;; XXX ERROR HERE
       (rename-buffer (format "*%s*"
-                             (inf-clojure--make-repl-name
+                             (inf-clojure--generate-repl-name
                               "inf-clojure"
                               project-dir
                               (process-id (get-buffer-process (current-buffer)))
@@ -577,13 +654,12 @@ process buffer for a list of commands.)"
       (current-buffer))))
 
 ;;;###autoload
-(defun inf-clojure-connect (host port &optional suppress-message)
-  "Connect to a running socket REPL server via `inf-clojure'.
-HOST is the host the process is running on, PORT is where it's
-listening.  SUPPRESS-MESSAGE is optional and if truthy will
-prevent showing the startup message."
+(defun inf-clojure-connect (host port)
+  "Connect to a REPL server listening at HOST on tcp PORT.
+
+Create a new REPL buffer named like *inf-clojure* and activate `inf-clojure-mode'."
   (interactive "shost: \nnport: ")
-  (inf-clojure (cons host port) suppress-message))
+  (inf-clojure (cons host port)))
 
 (defvar-local inf-clojure-socket-callback nil
   "Used to transfer state between the socket process buffer & REPL buffer.")
@@ -602,6 +678,7 @@ determine that a socket REPL is ready to receive a connection.
 PROCESS is the process object that is being filtered.
 
 OUTPUT is the latest data received from the process"
+  (message "RUN FILTER!!!!")
   (let ((server-buffer (process-buffer process)))
     (when (buffer-live-p server-buffer)
       (with-current-buffer server-buffer
@@ -642,12 +719,67 @@ between 15000-25000."
 
 ;;;###autoload
 (defun inf-clojure-socket-repl (cmd)
-  "Start a socket REPL server and connect to it with `inf-clojure-connect'.
+  "Start a clojure subprocess and open a new buffer connected to its REPL via TCP.
+
 CMD is the command line instruction used to start the socket REPL. If it
 contains a %d format pattern, that will be replaced by the specified or
 randomly generated `inf-clojure-socket-repl-port' number. Set
 `inf-clojure-custom-startup' or choose from the defaults provided in
-`inf-clojure-socket-repl-startup-forms'."
+`inf-clojure-socket-repl-startup-forms'.
+
+
+Details and quirks:
+
+`inf-clojure-socket-repl' creates a new buffer named like
+*inf-clojure-server*, starts a clojure server process in it, and then
+waits for the process to begin serving a REPL over TCP. The standard way
+to make clojure start this \"socket REPL\" is to pass an additional
+system property to the JVM. The command is as follows and available as
+one of the choices presented by `inf-clojure-socket-repl':
+
+  clojure -J-Dclojure.server.repl=\"{:port %d :accept clojure.core.server/repl}\"
+
+`inf-clojure-socket-repl' waits for the server to begin accepting
+connections by assuming it'll print a string to its stdout matching
+`inf-clojure-socket-ready-regexp' and waiting for such a match. Then, it
+uses `inf-clojure-connect' to open a REPL buffer, named like
+*inf-clojure* and connects it to the REPL at localhost on the specified
+`inf-clojure-socket-repl-port'. The *inf-clojure* buffer runs
+`inf-clojure-mode', which is derived from `comint-mode', and uses
+comint's networking feature by which a comint session interacts with
+remote I/O streams over TCP. REPL input is sent directly to the
+server-side TCP socket without passing through a pty device, so this
+socket REPL implementation is not affected by pty line buffering and
+line length issues like the buffer-local REPL of `inf-clojure' can be.
+
+The clojure server process actually runs 2 REPLs by default. It starts
+the socket REPL first, then loads user.clj, and finally starts the
+standard, console-local `clojure.main/repl' connected to
+stdin/stdout/stderr. These file descriptors are connected to the
+*inf-clojure-server* buffer, but interaction is primitive since that
+buffer is in Fundamental mode. You can view output sent to stdout/stderr
+there. If you need to send input to stdin, say because your clojure
+program is blocked on (.read System/in) or trying to read a password
+from the pty, you can switch to the *inf-clojure-server* buffer and then
+use M-x eval-expression to run something like:
+
+  (process-send-string (get-buffer-process (current-buffer)) \":hello-there\\n\")
+
+The first prompt printed to stdout by the `clojure.main/repl' is in fact
+what the default `inf-clojure-socket-ready-regexp' looks for to indicate
+startup is complete and that the `clojure.server.repl' is up. If your
+clojure program starts in a different way, such that it does not start
+the `clojure.main/repl' printing to stdout, you may need to make it
+print something else once a socket repl is being served, and adjust
+`inf-clojure-socket-ready-regexp' accordingly.
+
+Note that when you interact with the socket REPL over the TCP connection
+from the *inf-clojure* buffer, your REPL environment has bound clojure
+vars *in*, *out*, and *err* to the TCP connection on the server. These
+are _not_ the same as stdin/stdout/stderr . That's why a (println \"in
+the socket repl\") sends output right back to you in the *inf-clojure*
+buffer, but a (.println System/out \"goes to\") disappears to the
+*inf-clojure-server* buffer."
   (interactive (list (or (unless current-prefix-arg
                            inf-clojure-custom-startup)
                          (completing-read "Select Clojure socket REPL startup command: "
@@ -664,11 +796,12 @@ randomly generated `inf-clojure-socket-repl-port' number. Set
                                                        port))
          (server-buffer (generate-new-buffer " inf-clojure-tmp"))
          (server-cmd (format cmd port))
-         (server (let ((default-directory (or project-dir default-directory)))
+         (server (let ((default-directory (or project-dir default-directory))
+                       (process-connection-type inf-clojure-process-connection-type))
                    (start-file-process-shell-command server-name server-buffer server-cmd))))
     (with-current-buffer server-buffer
       (rename-buffer (format "*%s*"
-                             (inf-clojure--make-repl-name
+                             (inf-clojure--generate-repl-name
                               "inf-clojure-server"
                               project-dir
                               (process-id (get-buffer-process (current-buffer)))
@@ -677,7 +810,7 @@ randomly generated `inf-clojure-socket-repl-port' number. Set
       (setq-local
        inf-clojure-socket-callback
        (lambda ()
-         (let* ((created-repl-buffer (inf-clojure-connect host port :suppress-message)))
+         (let* ((created-repl-buffer (inf-clojure-connect host port)))
            (with-current-buffer (get-buffer created-repl-buffer)
              (setq-local inf-clojure-socket-buffer server-buffer)
              (set-process-sentinel
