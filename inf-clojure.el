@@ -178,7 +178,9 @@ source file by all `inf-clojure' commands."
     (set-keymap-parent map comint-mode-map)
     (define-key map (kbd "C-x C-e") #'inf-clojure-eval-last-sexp)
     (define-key map (kbd "C-c M-o") #'inf-clojure-clear-repl-buffer)
+    (define-key map (kbd "C-c C-t") #'inf-clojure-restart)
     (define-key map (kbd "C-c C-q") #'inf-clojure-quit)
+    (define-key map (kbd "C-c M-i") #'inf-clojure-info)
     (define-key map (kbd "C-c C-z") #'inf-clojure-switch-to-recent-buffer)
     (easy-menu-define inf-clojure-mode-menu map
       "Inferior Clojure REPL Menu"
@@ -186,6 +188,7 @@ source file by all `inf-clojure' commands."
         ["Eval last sexp" inf-clojure-eval-last-sexp t]
         "--"
         ["Clear REPL" inf-clojure-clear-repl-buffer]
+        ["Info" inf-clojure-info]
         ["Restart" inf-clojure-restart]
         ["Quit" inf-clojure-quit]
         "--"
@@ -213,6 +216,7 @@ source file by all `inf-clojure' commands."
     (define-key map (kbd "C-c C-z") #'inf-clojure-switch-to-repl)
     (define-key map (kbd "C-c C-t") #'inf-clojure-restart)
     (define-key map (kbd "C-c C-q") #'inf-clojure-quit)
+    (define-key map (kbd "C-c M-i") #'inf-clojure-info)
     (define-key map (kbd "C-c M-c") #'inf-clojure-connect)
     (define-key map (kbd "C-c M-r") #'inf-clojure-set-repl)
     (easy-menu-define inf-clojure-minor-mode-menu map
@@ -225,6 +229,7 @@ source file by all `inf-clojure' commands."
         "--"
         ["Switch to REPL" inf-clojure-switch-to-repl t]
         "--"
+        ["Display REPL info" inf-clojure-info]
         ["Restart REPL" inf-clojure-restart]
         ["Quit REPL" inf-clojure-quit]))
     map))
@@ -540,6 +545,15 @@ to suppress the usage of the target buffer discovery logic."
     (call-interactively #'inf-clojure)
     (rename-buffer target-buffer-name)))
 
+(defun inf-clojure-info (&optional buffer)
+  "Display REPL command or connection details in the minibuffer.
+
+You can pass the target BUFFER as an optional parameter
+to suppress the usage of the target buffer discovery logic."
+  (interactive)
+  (with-current-buffer (or buffer (inf-clojure-select-repl-buffer))
+    (message "%s" inf-clojure-repl-info)))
+
 (defun inf-clojure--project-name (dir)
   "Extract a project name from a project DIR.
 The name is simply the final segment of the path."
@@ -564,12 +578,19 @@ The name is simply the final segment of the path."
 
 (defun inf-clojure--generate-repl-name (tag &optional project-dir pid host port)
   (generate-new-buffer-name
-   (format "%s[%s%s%s%s]"
+   (format "*%s[%s%s%s%s]*"
            tag
            (if project-dir (inf-clojure--project-name project-dir) "")
            (if pid (format ".%d" pid) "")
            (if host (format "@%s" host) "")
            (if port (format ":%d" port) ""))))
+
+(defun inf-clojure--generate-repl-name2 (tag &optional name)
+  (generate-new-buffer-name
+   (format "*%s%s*"
+           tag
+           (if name (format "[%s]" name) ""))))
+
 
 ;;;###autoload
 (defun inf-clojure (cmd)
@@ -616,42 +637,56 @@ See also https://unix.stackexchange.com/questions/643777/is-there-any-limit-on-l
                                           (mapcar #'cdr inf-clojure-startup-forms)
                                           nil
                                           'confirm-after-completion))))
-  (let* ((project-dir (inf-clojure--project-dir))
-         (cmdlist (if (consp cmd)
-                      (list cmd)
-                    (split-string-and-unquote cmd)))
-         (process-connection-type inf-clojure-process-connection-type))
+  (let (prog args host port)
     (if (consp cmd)
-        (message "Connecting to Clojure REPL at `%s:%d'" (car cmd) (cdr cmd))
+        (progn
+          (setq host (car cmd))
+          (setq port (cdr cmd))
+          (message "Connecting to Clojure REPL at `%s:%d'" host port))
+      (let ((cmdlist (split-string-shell-command cmd)))
+        (setq prog (car cmdlist))
+        (setq args (cdr cmdlist)))
       (message "Starting Clojure REPL with `%s'" cmd))
-    (with-current-buffer
-        (let ((default-directory (or project-dir default-directory)))
-          (apply #'make-comint-in-buffer
-                 (inf-clojure--generate-repl-name "inf-clojure" project-dir)
-                 (generate-new-buffer-name " inf-clojure-tmp")
+    (let* (
+           (project-dir (inf-clojure--project-dir))
+           (default-directory (or project-dir default-directory))
+           (repl-name (inf-clojure--generate-repl-name2 "inf-clojure" project-dir))
+           ;; (repl-name "*inf-clojure*")
 
-                 (car cmdlist) nil (cdr cmdlist)))
+           )
+      (setq default-directory (or (inf-clojure--project-dir) default-directory))
+      (let ((process-connection-type inf-clojure-process-connection-type)
+            (repl-name "*inf-clojure*"))
 
-      ;; XXX ERROR HERE
-      (rename-buffer (format "*%s*"
-                             (inf-clojure--generate-repl-name
-                              "inf-clojure"
-                              project-dir
-                              (process-id (get-buffer-process (current-buffer)))
-                              (when (consp cmd)
-                                (car cmd))
-                              (when (consp cmd)
-                                (cdr cmd)))))
-      (inf-clojure-mode)
-      (setq inf-clojure-buffer (current-buffer))
-      (set-syntax-table (pcase (car (inf-clojure--get-preferred-major-modes))
-                          ('clojure-ts-mode clojure-ts-mode-syntax-table)
-                          (_ clojure-mode-syntax-table)))
-      (hack-dir-local-variables-non-file-buffer)
-      (if inf-clojure-repl-use-same-window
-          (pop-to-buffer-same-window (current-buffer))
-        (pop-to-buffer (current-buffer)))
-      (current-buffer))))
+        (with-current-buffer
+
+            (apply #'make-comint-in-buffer
+                                    repl-name
+                                    repl-name
+                                    (or prog
+                                        (cons host port))
+                                    nil ; startfile
+                                    args)
+
+          (inf-clojure-mode)
+          (hack-dir-local-variables-non-file-buffer)
+
+          (setq-local inf-clojure-repl-info
+                      (if prog
+                          `((cmd . ,(cons prog args))
+                            (pid . ,(process-id (get-buffer-process (current-buffer)))))
+                        `((host . ,host)
+                          (port . ,port))))
+          (setq inf-clojure-buffer (current-buffer))
+          (set-syntax-table (pcase (car (inf-clojure--get-preferred-major-modes))
+                              ('clojure-ts-mode clojure-ts-mode-syntax-table)
+                              (_ clojure-mode-syntax-table)))
+          (if inf-clojure-repl-use-same-window
+              (pop-to-buffer-same-window (current-buffer))
+            (pop-to-buffer (current-buffer)))
+          (current-buffer))))))
+
+
 
 ;;;###autoload
 (defun inf-clojure-connect (host port)
